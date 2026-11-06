@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Moon Explorer · Detailed Info</title>
+<style>
+:root {
+    --void: #020205;
+    --ink: #e8ebf5;
+    --dim: #8b93aa;
+    --acc: #b0bec5;
+    --acc-light: #ffffff;
+    --glass: rgba(15, 15, 18, 0.58);
+    --line: rgba(255, 255, 255, 0.1);
+    color-scheme: dark;
+    --serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body {
+    height: 100%; min-height: 100%;
+    background: var(--void); color: var(--ink);
+    font-family: var(--sans); overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
+}
+#c {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    touch-action: none; display: block; cursor: grab;
+}
+#c:active { cursor: grabbing; }
+
+#vig {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at 50% 50%, transparent 40%, rgba(2, 2, 5, 0.7) 80%, rgba(0, 0, 0, 0.95));
+    isolation: isolate; z-index: 1;
+}
+
+.glass {
+    background: linear-gradient(145deg, rgba(25, 25, 30, 0.65), rgba(10, 10, 15, 0.55));
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 12px 40px rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(16px) saturate(1.1); -webkit-backdrop-filter: blur(16px) saturate(1.1);
+    border-radius: 16px; z-index: 5;
+}
+.ui { transition: opacity 0.6s; }
+body.cine .ui { opacity: 0; pointer-events: none; }
+
+#hud {
+    position: fixed; left: max(16px, env(safe-area-inset-left)); top: calc(16px + env(safe-area-inset-top));
+    padding: 12px 44px 12px 16px; pointer-events: none;
+}
+#hud h1 { font: 400 13px var(--sans); color: var(--dim); letter-spacing: 0.05em; text-transform: uppercase; }
+#zone { font: 400 26px/1.2 var(--serif); margin-top: 4px; color: #fff; }
+#cap { font-size: 13px; line-height: 1.5; color: #b9c0d4; margin-top: 6px; max-width: 260px; }
+
+#btn-close-hud {
+    position: absolute; top: 12px; right: 12px; width: 24px; height: 24px; min-height: 24px;
+    border-radius: 50%; padding: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 16px; line-height: 1; background: rgba(255, 255, 255, 0.08); border: none; color: var(--dim);
+    pointer-events: auto; cursor: pointer;
+}
+#btn-close-hud:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+
+#info {
+    position: fixed; right: max(16px, env(safe-area-inset-right)); top: calc(16px + env(safe-area-inset-top));
+    width: min(340px, calc(100vw - 32px)); padding: 24px;
+    transform: translateX(calc(100% + 24px)); transition: transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+    max-height: calc(100vh - 120px); overflow-y: auto; pointer-events: auto;
+}
+#info.show { transform: none; }
+#info h2 { font: 400 24px var(--serif); color: #fff; margin-bottom: 16px; border-bottom: 1px solid var(--line); padding-bottom: 12px; padding-right: 30px; }
+#info .stat { font-size: 13px; color: var(--acc-light); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+#info .stat span { color: var(--dim); text-align: left; }
+#info .stat b { font-weight: 500; text-align: right; }
+#info p { font-size: 13px; line-height: 1.6; color: #cbd1e0; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+
+#btn-close-info {
+    position: absolute; top: 16px; right: 16px; width: 28px; height: 28px; min-height: 28px;
+    border-radius: 50%; padding: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 18px; line-height: 1; background: rgba(255, 255, 255, 0.08); border: none; color: var(--dim);
+}
+#btn-close-info:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+
+#bar {
+    position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom));
+    transform: translateX(-50%); width: min(600px, calc(100vw - 32px));
+    padding: 10px 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center;
+    pointer-events: auto;
+}
+#sl { flex: 1 1 100%; order: -1; accent-color: var(--acc); height: 20px; min-width: 100px; cursor: pointer; touch-action: pan-x; }
+
+button {
+    font: inherit; font-size: 12px; font-weight: 500; color: var(--ink);
+    background: linear-gradient(145deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 10px;
+    padding: 8px 14px; min-height: 38px; cursor: pointer;
+    transition: all 0.2s; touch-action: manipulation;
+}
+button:hover { background: rgba(255, 255, 255, 0.15); border-color: rgba(255, 255, 255, 0.3); }
+button:active { transform: scale(0.95); }
+button.act { background: linear-gradient(135deg, var(--acc), #78909c); color: #111; border-color: transparent; box-shadow: 0 4px 12px rgba(176, 190, 197, 0.3); font-weight: 600; }
+button:focus-visible, #sl:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+
+#load {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    background: var(--void); z-index: 99; color: var(--dim);
+    font: 20px var(--serif); letter-spacing: 0.03em; transition: opacity 1s;
+}
+#load::after {
+    content: ""; position: absolute; width: 36px; height: 36px; margin-top: 80px;
+    border: 2px solid rgba(255, 255, 255, 0.1); border-top-color: var(--acc);
+    border-radius: 50%; animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 640px) {
+    #hud { top: calc(12px + env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); padding-right: 36px; }
+    #zone { font-size: 22px; }
+    #bar { bottom: calc(12px + env(safe-area-inset-bottom)); width: calc(100vw - 24px); padding: 8px; gap: 6px; }
+    button { font-size: 11px; padding: 7px 10px; min-height: 36px; }
+    #info { top: auto; bottom: calc(110px + env(safe-area-inset-bottom)); right: 12px; transform: translateY(calc(100% + 130px)); width: calc(100vw - 24px); padding: 16px; max-height: 50vh; }
+    #info.show { transform: translateY(0); }
+}
+</style>
+</head>
+<body>
+
+<canvas id="c" aria-label="Interactive 3D Moon"></canvas>
+<div id="vig"></div>
+
+<div id="hud" class="ui glass">
+    <button id="btn-close-hud" aria-label="Close HUD">&times;</button>
+    <h1>Moon Explorer</h1>
+    <div id="zone">The Lunar Surface</div>
+    <div id="cap">Earth's only natural satellite. Drag or pinch to explore.</div>
+</div>
+
+<aside id="info" class="glass ui" aria-live="polite">
+    <button id="btn-close-info" aria-label="Close Info">&times;</button>
+    <h2>Moon Fact Sheet</h2>
+    <div class="stat"><span>Equatorial Radius</span> <b>1,737.4 km</b></div>
+    <div class="stat"><span>Surface Gravity</span> <b>1.62 m/s² (0.166g)</b></div>
+    <div class="stat"><span>Avg. Distance to Earth</span> <b>384,400 km</b></div>
+    <div class="stat"><span>Orbital Period</span> <b>27.32 days</b></div>
+    <div class="stat"><span>Surface Temp</span> <b>-173°C to 127°C</b></div>
+    <div class="stat"><span>Estimated Age</span> <b>~4.53 billion years</b></div>
+    <div class="stat"><span>Atmosphere</span> <b>Exosphere (Trace)</b></div>
+    <p>The Moon is Earth's only natural satellite, likely formed from the debris of a giant impact between Earth and a Mars-sized body early in the Solar System's history.<br><br>It is in synchronous rotation with Earth, always showing the same face. Its surface is a silent landscape marked by dark volcanic maria, bright ancient crustal highlands, and countless impact craters.</p>
+</aside>
+
+<nav id="bar" class="glass ui">
+    <input id="sl" type="range" min="0" max="1000" value="0" aria-label="Zoom level">
+    <button id="btn-info">View Details</button>
+    <button id="btn-cine">Cinematic Mode</button>
+    <button id="btn-home" class="act">Reset View</button>
+</nav>
+
+<div id="load">Assembling the world...</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function() {
+    const $ = id => document.getElementById(id);
+    const canvas = $('c');
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+    
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(width, height);
+    renderer.outputEncoding = THREE.sRGBEncoding;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
+    
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.05);
+    scene.add(ambientLight);
+    
+    const sunLight = new THREE.DirectionalLight(0xffffff, 1.8);
+    sunLight.position.set(5, 3, 5);
+    scene.add(sunLight);
+    
+    const backLight = new THREE.DirectionalLight(0xffffff, 0.15);
+    backLight.position.set(-5, -3, -5);
+    scene.add(backLight);
+
+    const textureLoader = new THREE.TextureLoader();
+    const loadTex = (url) => {
+        return textureLoader.load(url, undefined, undefined, (err) => {
+            console.warn('Texture failed to load, using fallback.');
+        });
+    };
+
+    const txDiffuse = loadTex('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/moon_1024.jpg');
+    
+    const moonGroup = new THREE.Group();
+    scene.add(moonGroup);
+
+    const moonGeo = new THREE.SphereGeometry(1, 64, 64);
+    const moonMat = new THREE.MeshStandardMaterial({
+        map: txDiffuse,
+        bumpMap: txDiffuse,
+        bumpScale: 0.012,
+        roughness: 0.9,
+        metalness: 0.0
+    });
+    const moonMesh = new THREE.Mesh(moonGeo, moonMat);
+    moonGroup.add(moonMesh);
+
+    const starsGeo = new THREE.BufferGeometry();
+    const starCount = 3000;
+    const starPos = new Float32Array(starCount * 3);
+    const starCol = new Float32Array(starCount * 3);
+    for(let i=0; i<starCount; i++) {
+        const r = 50 + Math.random() * 100;
+        const theta = 2 * Math.PI * Math.random();
+        const phi = Math.acos(2 * Math.random() - 1);
+        starPos[i*3] = r * Math.sin(phi) * Math.cos(theta);
+        starPos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+        starPos[i*3+2] = r * Math.cos(phi);
+        
+        const c = 0.5 + Math.random() * 0.5;
+        starCol[i*3] = c * 0.9;
+        starCol[i*3+1] = c;
+        starCol[i*3+2] = c * 1.1;
+    }
+    starsGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    starsGeo.setAttribute('color', new THREE.BufferAttribute(starCol, 3));
+    const starsMat = new THREE.PointsMaterial({ size: 0.15, vertexColors: true, transparent: true, opacity: 0.8 });
+    const starMesh = new THREE.Points(starsGeo, starsMat);
+    scene.add(starMesh);
+
+    const MIN_ZOOM = 1.1;
+    const MAX_ZOOM = 7.0;
+
+    function calculateDefaultZoom() {
+        const aspect = window.innerWidth / window.innerHeight;
+        const baseZoom = 2.65;
+        if (aspect < 1) {
+            return baseZoom / aspect * 0.95; 
+        }
+        return baseZoom;
+    }
+
+    let DEFAULT_ZOOM = calculateDefaultZoom();
+
+    const targetSpherical = new THREE.Spherical(DEFAULT_ZOOM, Math.PI / 2, 0); 
+    const currentSpherical = new THREE.Spherical(DEFAULT_ZOOM, Math.PI / 2, 0);
+    
+    let isDragging = false;
+    let previousMousePosition = { x: 0, y: 0 };
+    let cinematicMode = false;
+    let infoVisible = false;
+
+    function updateSliderVisual() {
+        const val = ((MAX_ZOOM - targetSpherical.radius) / (MAX_ZOOM - MIN_ZOOM)) * 1000;
+        $('sl').value = val;
+    }
+    updateSliderVisual();
+
+    function setZoomFromSlider(val) {
+        const percentage = val / 1000;
+        targetSpherical.radius = MAX_ZOOM - (percentage * (MAX_ZOOM - MIN_ZOOM));
+    }
+
+    const pointerCache = [];
+    let initialPinchDist = -1;
+
+    canvas.addEventListener('pointerdown', (e) => {
+        if (cinematicMode) {
+            $('btn-cine').click();
+        }
+
+        pointerCache.push(e);
+        if (pointerCache.length === 1) {
+            isDragging = true;
+            previousMousePosition = { x: e.clientX, y: e.clientY };
+        } else if (pointerCache.length === 2) {
+            isDragging = false;
+            initialPinchDist = Math.hypot(
+                pointerCache[0].clientX - pointerCache[1].clientX,
+                pointerCache[0].clientY - pointerCache[1].clientY
+            );
+        }
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+        const index = pointerCache.findIndex(p => p.pointerId === e.pointerId);
+        if (index !== -1) pointerCache[index] = e;
+
+        if (pointerCache.length === 1 && isDragging) {
+            const deltaMove = {
+                x: e.clientX - previousMousePosition.x,
+                y: e.clientY - previousMousePosition.y
+            };
+
+            const zoomFactor = targetSpherical.radius / MAX_ZOOM;
+            const rotSpeed = 0.005 * zoomFactor;
+
+            targetSpherical.theta -= deltaMove.x * rotSpeed;
+            targetSpherical.phi -= deltaMove.y * rotSpeed;
+            targetSpherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, targetSpherical.phi));
+
+            previousMousePosition = { x: e.clientX, y: e.clientY };
+        } else if (pointerCache.length === 2 && initialPinchDist > 0) {
+            const currentDist = Math.hypot(
+                pointerCache[0].clientX - pointerCache[1].clientX,
+                pointerCache[0].clientY - pointerCache[1].clientY
+            );
+            
+            const zoomDelta = (initialPinchDist - currentDist) * 0.015;
+            targetSpherical.radius += zoomDelta;
+            targetSpherical.radius = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, targetSpherical.radius));
+
+            initialPinchDist = currentDist;
+            updateSliderVisual();
+        }
+    });
+
+    function removePointer(e) {
+        const index = pointerCache.findIndex(p => p.pointerId === e.pointerId);
+        if (index !== -1) pointerCache.splice(index, 1);
+        
+        if (pointerCache.length < 2) initialPinchDist = -1;
+        if (pointerCache.length === 0) {
+            isDragging = false;
+        } else if (pointerCache.length === 1) {
+            isDragging = true;
+            previousMousePosition = { x: pointerCache[0].clientX, y: pointerCache[0].clientY };
+        }
+    }
+
+    canvas.addEventListener('pointerup', removePointer);
+    canvas.addEventListener('pointercancel', removePointer);
+    canvas.addEventListener('pointerout', removePointer);
+    canvas.addEventListener('pointerleave', removePointer);
+
+    canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        targetSpherical.radius += e.deltaY * 0.002;
+        targetSpherical.radius = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, targetSpherical.radius));
+        updateSliderVisual();
+    }, { passive: false });
+
+    $('sl').addEventListener('input', (e) => { setZoomFromSlider(e.target.value); });
+    
+    // Close HUD functionality
+    $('btn-close-hud').addEventListener('click', () => {
+        $('hud').style.opacity = '0';
+        setTimeout(() => {
+            $('hud').style.display = 'none';
+        }, 600);
+    });
+    
+    $('btn-info').addEventListener('click', () => {
+        infoVisible = !infoVisible;
+        $('info').classList.toggle('show', infoVisible);
+        $('btn-info').classList.toggle('act', infoVisible);
+        
+        if (infoVisible && cinematicMode) {
+            $('btn-cine').click(); 
+        }
+    });
+
+    $('btn-close-info').addEventListener('click', () => {
+        if (infoVisible) {
+            $('btn-info').click(); 
+        }
+    });
+
+    $('btn-cine').addEventListener('click', () => {
+        cinematicMode = !cinematicMode;
+        $('btn-cine').classList.toggle('act', cinematicMode);
+        document.body.classList.toggle('cine', cinematicMode);
+        
+        if (cinematicMode) {
+            if (infoVisible) $('btn-info').click();
+            
+            targetSpherical.radius = DEFAULT_ZOOM;
+            targetSpherical.phi = Math.PI / 2;
+            updateSliderVisual();
+        }
+    });
+
+    $('btn-home').addEventListener('click', () => {
+        if (cinematicMode) $('btn-cine').click(); 
+        
+        DEFAULT_ZOOM = calculateDefaultZoom();
+        targetSpherical.radius = DEFAULT_ZOOM;
+        targetSpherical.phi = Math.PI / 2;
+        updateSliderVisual();
+    });
+
+    window.addEventListener('resize', () => {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+        renderer.setSize(width, height);
+        
+        DEFAULT_ZOOM = calculateDefaultZoom();
+    });
+
+    setTimeout(() => {
+        const l = $('load');
+        l.style.opacity = 0;
+        setTimeout(() => l.remove(), 1000);
+    }, 1500);
+
+    const clock = new THREE.Clock();
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const delta = clock.getDelta();
+
+        const rotationSpeed = cinematicMode ? 0.06 : 0.015;
+        targetSpherical.theta += rotationSpeed * delta;
+
+        const lerpFactor = 0.08;
+        currentSpherical.radius += (targetSpherical.radius - currentSpherical.radius) * lerpFactor;
+        currentSpherical.phi += (targetSpherical.phi - currentSpherical.phi) * lerpFactor;
+        
+        let dt = targetSpherical.theta - currentSpherical.theta;
+        while (dt > Math.PI) dt -= Math.PI * 2;
+        while (dt < -Math.PI) dt += Math.PI * 2;
+        currentSpherical.theta += dt * lerpFactor;
+
+        camera.position.setFromSpherical(currentSpherical);
+        camera.lookAt(0, 0, 0);
+
+        renderer.render(scene, camera);
+    }
+    
+    animate();
+})();
+</script>
+</body>
+</html>
