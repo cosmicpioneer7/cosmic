@@ -7264,7 +7264,7 @@ async function submit(kind) {
   const password = $('#pw').value;
   if (kind === 'new') {
     const bad = !$('#name').value.trim() ? 'Enter your name.'
-      : !AUOK ? 'Enter a valid username.'
+      : !unOk(unClean($('#auser').value)) ? 'Enter a valid username (3–20 characters, starting with a letter; letters, numbers and underscores only).' 
       : !email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? 'Enter a valid email address.'
       : password.length < 8 ? 'Use a password with at least 8 characters.'
       : password !== $('#pw2').value ? 'Passwords do not match.' : '';
