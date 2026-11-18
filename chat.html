@@ -7264,7 +7264,7 @@ async function submit(kind) {
   const password = $('#pw').value;
   if (kind === 'new') {
     const bad = !$('#name').value.trim() ? 'Enter your name.'
-      : !unOk(unClean($('#auser').value)) ? 'Enter a valid username (3–20 characters, starting with a letter; letters, numbers and underscores only).' 
+      : !/^[a-z][a-z0-9_]{2,19}$/.test(String($('#auser').value || '').trim().toLowerCase().replace(/^@/, '')) ? 'Username must be 3–20 characters, start with a letter, and contain only letters, numbers or underscores.' 
       : !email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? 'Enter a valid email address.'
       : password.length < 8 ? 'Use a password with at least 8 characters.'
       : password !== $('#pw2').value ? 'Passwords do not match.' : '';
@@ -7289,7 +7289,7 @@ async function submit(kind) {
       const { data, error } = await sb.auth.signUp({
         email, password,
         options: {
-          data: { full_name: $('#name').value.trim(), username: unClean($('#auser').value) },
+          data: { full_name: $('#name').value.trim(), username: String($('#auser').value || '').trim().toLowerCase().replace(/^@/, '') },
           emailRedirectTo: window.location.origin + window.location.pathname
         }
       });
