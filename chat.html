@@ -5777,19 +5777,36 @@ function vProfile(v) {
       el('label', { class: 'lbl' }, 'About', bio),
       el('label', { class: 'lbl' }, 'Username', un),
       el('small', { style: 'white-space:normal' }, 'You can change your username once every 14 days.'),
-      el('div', { style: 'width:100%;display:flex;justify-content:flex-end' }, btn('Save changes', () => {
-        const nu = un.value.trim().replace(/^@/, '').toLowerCase().replace(/[^a-z0-9_]/g, '') || P.user || 'cosmic_you';
-        if (nu !== P.user) {
-          const left = P.userAt ? P.userAt + 14 * 864e5 - Date.now() : 0;
-          if (left > 0) { haptic('warn'); return toast('You can change your username again in ' + Math.ceil(left / 864e5) + ' days.'); }
-          if (!unOk(nu)) { haptic('warn'); return toast('Use 3 to 20 letters, numbers or underscores. Start with a letter.'); }
-          haptic('warn'); return toast('Username changes will be validated and saved by Supabase after backend integration.');
+      el('div', { style: 'width:100%;display:flex;justify-content:flex-end' }, btn('Save changes', async () => {
+        const nu = un.value.trim().replace(/^@/, '').toLowerCase();
+        const nextName = nm.value.trim() || 'You';
+        const nextBio = bio.value.trim();
+        if (!unOk(nu)) { haptic('warn'); return toast('Use 3 to 20 letters, numbers or underscores. Start with a letter.'); }
+        if (!sb || !activeUserId) return toast('Please sign in again before saving your profile.');
+        const saveButton = document.querySelector('.pcard button');
+        try {
+          const { data, error } = await sb.from('profiles')
+            .update({ username: nu, display_name: nextName, bio: nextBio, updated_at: new Date().toISOString() })
+            .eq('id', activeUserId)
+            .select('id, username, display_name, avatar_url, bio')
+            .single();
+          if (error) throw error;
+          P.name = data.display_name || nextName;
+          P.username = data.username;
+          P.user = data.username;
+          P.bio = data.bio || '';
+          P.img = data.avatar_url || P.img;
+          U.me = { n: P.name, username: P.user, img: P.img, on: true };
+          haptic('success');
+          toast('Profile saved successfully');
+          render();
+        } catch (e) {
+          console.error('Profile update failed:', e);
+          const msg = e.code === '23505' ? 'That username is already taken.' :
+            e.code === '42501' ? 'You do not have permission to update this profile.' :
+            (e.message || 'Could not save your profile.');
+          toast(msg);
         }
-        P.name = nm.value.trim() || 'You';
-        P.bio = bio.value.trim();
-        haptic('success');
-        toast('Profile saved');
-        render();
       }))
     ),
     el('div', { class: 'sec' }, 'More'),
@@ -7463,8 +7480,8 @@ async function activateSession(session) {
     }
     P = {
       ...P, name: profile.display_name || session.user.email || 'Cosmic User',
-      username: profile.username || '', img: profile.avatar_url || '',
-      bio: profile.bio || ''
+      username: profile.username || '', user: profile.username || '',
+      img: profile.avatar_url || '', bio: profile.bio || ''
     };
     U.me = { n: P.name, username: P.username, img: P.img, on: true };
     enter();
