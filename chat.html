@@ -5894,29 +5894,38 @@ function stopTyping() {
 function setupCosmicPresence() {
   if (!sb || !activeUserId) return;
   if (cosmicPresenceChannel) sb.removeChannel(cosmicPresenceChannel);
-  cosmicPresenceChannel = sb.channel('cosmic-online', { config: { presence: { key: activeUserId } } });
-  cosmicPresenceChannel.on('presence', { event: 'sync' }, () => {
-    const onlineIds = new Set(Object.keys(cosmicPresenceChannel.presenceState()));
-    Object.keys(U).forEach(id => { if (id !== 'me') U[id].on = onlineIds.has(id); });
-    if (U.me) U.me.on = true;
-    if (cur != null) head();
-    render();
-  }).subscribe(async status => {
-    if (status === 'SUBSCRIBED') await cosmicPresenceChannel.track({ user_id: activeUserId, online_at: new Date().toISOString() });
+  cosmicPresenceReady = false;
+  cosmicPresenceChannel = sb.channel('cosmic-online', {
+    config: { presence: { key: activeUserId }, broadcast: { self: false } }
   });
+  cosmicPresenceChannel
+    .on('presence', { event: 'sync' }, () => {
+      const onlineIds = new Set(Object.keys(cosmicPresenceChannel.presenceState()));
+      Object.keys(U).forEach(id => { if (id !== 'me') U[id].on = onlineIds.has(id); });
+      if (U.me) U.me.on = true;
+      if (cur != null) head();
+      render();
+    })
+    .on('broadcast', { event: 'typing' }, message => {
+      const data = message.payload || {};
+      if (data.user_id === activeUserId || data.conversation_id !== cur) return;
+      typer = data.typing ? (U[data.user_id]?.n || 'Someone') : '';
+      if (cur != null) head();
+    })
+    .subscribe(async status => {
+      cosmicPresenceReady = status === 'SUBSCRIBED';
+      if (cosmicPresenceReady) {
+        const { error } = await cosmicPresenceChannel.track({ user_id: activeUserId, online_at: new Date().toISOString() });
+        if (error) console.warn('Presence tracking failed:', error.message);
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.warn('Cosmic presence channel:', status);
+      }
+    });
 }
 function subscribeToConversation(conversationId) {
   if (!sb) return;
   if (activeMessageChannel) sb.removeChannel(activeMessageChannel);
   activeMessageChannel = sb.channel('cosmic-chat-' + conversationId)
-    .on('broadcast', { event: 'typing' }, payload => {
-      const data = payload.payload || {};
-      if (data.user_id === activeUserId) return;
-      const c = find(conversationId);
-      if (!c) return;
-      typer = data.typing ? (U[data.user_id]?.n || 'Someone') : '';
-      if (cur === conversationId) head();
-    })
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversation_members', filter: 'conversation_id=eq.' + conversationId }, () => refreshReadReceipts(conversationId))
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: 'conversation_id=eq.' + conversationId }, payload => {
       const c = find(conversationId);
@@ -7603,6 +7612,7 @@ if (sb) {
     if (session) setTimeout(() => activateSession(session), 0);
     else if (event === 'SIGNED_OUT') {
       activeUserId = null;
+      cosmicPresenceReady = false;
       if (cosmicPresenceChannel) { sb.removeChannel(cosmicPresenceChannel); cosmicPresenceChannel = null; }
       $('#app').hidden = true;
       $('#auth').hidden = false;
