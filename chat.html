@@ -5867,24 +5867,45 @@ let typingStopTimer = null;
 let cosmicPresenceChannel = null;
 let cosmicPresenceReady = false;
 async function markConversationRead(conversationId) {
-  if (!sb || !activeUserId || !conversationId) return;
-  const { error } = await sb.rpc('mark_conversation_read', { target_conversation: conversationId });
-  if (error) console.warn('Could not update read status:', error.message);
+  if (!sb || !activeUserId || !conversationId || cur !== conversationId) return;
+  const { data, error } = await sb.rpc('mark_conversation_read', { target_conversation: conversationId });
+  if (error) {
+    console.warn('Read receipt RPC failed; trying membership update:', error.message);
+    const fallback = await sb.from('conversation_members')
+      .update({ last_read_at: new Date().toISOString() })
+      .eq('conversation_id', conversationId).eq('user_id', activeUserId).select('last_read_at').maybeSingle();
+    if (fallback.error) console.warn('Read receipt fallback failed:', fallback.error.message);
+  }
+  await refreshReadReceipts(conversationId);
 }
 async function refreshReadReceipts(conversationId) {
   const c = find(conversationId);
   if (!sb || !c || !activeUserId) return;
-  const { data, error } = await sb.from('conversation_members').select('user_id, last_read_at').eq('conversation_id', conversationId);
+  const { data, error } = await sb.from('conversation_members')
+    .select('user_id, last_read_at').eq('conversation_id', conversationId);
   if (error) { console.warn('Could not refresh read receipts:', error.message); return; }
   const others = (data || []).filter(member => member.user_id !== activeUserId);
-  c.msgs.forEach(message => { if (message.f === 'me') message.read = others.length > 0 && others.every(member => member.last_read_at && new Date(member.last_read_at).getTime() >= message.t); });
+  c.msgs.forEach(message => {
+    if (message.f !== 'me') return;
+    message.read = others.length > 0 && others.every(member =>
+      member.last_read_at && new Date(member.last_read_at).getTime() >= message.t
+    );
+  });
   if (cur === conversationId) msgs(false);
 }
 function broadcastTyping(isTyping) {
-  if (!cosmicPresenceChannel || !cosmicPresenceReady || !activeUserId || cur == null || !ST.typing) return;
-  cosmicPresenceChannel.send({ type: 'broadcast', event: 'typing', payload: { user_id: activeUserId, conversation_id: cur, typing: !!isTyping } })
-    .then(status => { if (status === 'error') console.warn('Typing broadcast rejected by Realtime.'); })
-    .catch(error => console.warn('Typing update failed:', error));
+  if (!activeUserId || cur == null || !ST.typing) return;
+  const sendOn = channel => {
+    if (!channel) return;
+    channel.send({
+      type: 'broadcast', event: 'typing',
+      payload: { user_id: activeUserId, conversation_id: cur, typing: !!isTyping }
+    }).then(status => {
+      if (status === 'error') console.warn('Typing broadcast rejected by Realtime.');
+    }).catch(error => console.warn('Typing update failed:', error));
+  };
+  if (cosmicPresenceReady) sendOn(cosmicPresenceChannel);
+  if (activeMessageChannel) sendOn(activeMessageChannel);
 }
 function stopTyping() {
   if (typingStopTimer) clearTimeout(typingStopTimer);
@@ -5925,7 +5946,15 @@ function setupCosmicPresence() {
 function subscribeToConversation(conversationId) {
   if (!sb) return;
   if (activeMessageChannel) sb.removeChannel(activeMessageChannel);
-  activeMessageChannel = sb.channel('cosmic-chat-' + conversationId)
+  activeMessageChannel = sb.channel('cosmic-chat-' + conversationId, {
+    config: { broadcast: { self: false } }
+  })
+    .on('broadcast', { event: 'typing' }, message => {
+      const data = message.payload || {};
+      if (data.user_id === activeUserId || data.conversation_id !== conversationId || cur !== conversationId) return;
+      typer = data.typing ? (U[data.user_id]?.n || 'Someone') : '';
+      head();
+    })
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversation_members', filter: 'conversation_id=eq.' + conversationId }, () => refreshReadReceipts(conversationId))
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: 'conversation_id=eq.' + conversationId }, payload => {
       const c = find(conversationId);
@@ -5938,7 +5967,10 @@ function subscribeToConversation(conversationId) {
       render();
       refreshReadReceipts(conversationId);
     })
-    .subscribe(status => { if (status === 'CHANNEL_ERROR') console.warn('Realtime subscription failed for', conversationId); });
+    .subscribe(status => {
+      if (status === 'SUBSCRIBED' && cur === conversationId) markConversationRead(conversationId);
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') console.warn('Realtime subscription failed for', conversationId, status);
+    });
 }
 
 function open(id) {
@@ -6161,7 +6193,7 @@ $('#txt').oninput = e => {
   const c = cur != null && find(cur), v = elTxt.value;
   if (c) c.draft = v;
   syncAct();
-  if (c && v.trim()) {
+  if (c && v.trim() && ST.typing) {
     broadcastTyping(true);
     if (typingStopTimer) clearTimeout(typingStopTimer);
     typingStopTimer = setTimeout(() => broadcastTyping(false), 1600);
