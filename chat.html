@@ -4198,7 +4198,7 @@ async function loadConversations() {
     : { data: [], error: null };
   if (profileResult.error) throw profileResult.error;
   (profileResult.data || []).forEach(profile => {
-    U[profile.id] = { n: profile.display_name || profile.username, username: profile.username, img: profile.avatar_url || '', bio: profile.bio || '', on: false };
+    U[profile.id] = { n: profile.display_name || profile.username, username: profile.username, img: profile.avatar_url || '', bio: profile.bio || '', on: cosmicOnlineIds.has(profile.id) };
   });
 
   const memberMap = new Map();
@@ -5910,6 +5910,8 @@ let activeMessageChannel = null;
 let typingStopTimer = null;
 let cosmicPresenceChannel = null;
 let cosmicPresenceReady = false;
+let cosmicOnlineIds = new Set();
+let typingPeerTimer = null;
 async function markConversationRead(conversationId) {
   if (!sb || !activeUserId || !conversationId || cur !== conversationId) return;
   const { data, error } = await sb.rpc('mark_conversation_read', { target_conversation: conversationId });
@@ -5967,17 +5969,13 @@ async function syncIncomingConversation(conversationId) {
 }
 function broadcastTyping(isTyping) {
   if (!activeUserId || cur == null || !ST.typing) return;
-  const sendOn = channel => {
-    if (!channel) return;
-    channel.send({
-      type: 'broadcast', event: 'typing',
-      payload: { user_id: activeUserId, conversation_id: cur, typing: !!isTyping }
-    }).then(status => {
-      if (status === 'error') console.warn('Typing broadcast rejected by Realtime.');
-    }).catch(error => console.warn('Typing update failed:', error));
-  };
-  if (cosmicPresenceReady) sendOn(cosmicPresenceChannel);
-  if (activeMessageChannel) sendOn(activeMessageChannel);
+  if (!cosmicPresenceReady || !cosmicPresenceChannel) return;
+  cosmicPresenceChannel.send({
+    type: 'broadcast', event: 'typing',
+    payload: { user_id: activeUserId, conversation_id: cur, typing: !!isTyping }
+  }).then(status => {
+    if (status !== 'ok') console.warn('Typing broadcast status:', status);
+  }).catch(error => console.warn('Typing update failed:', error));
 }
 function stopTyping() {
   if (typingStopTimer) clearTimeout(typingStopTimer);
@@ -5993,8 +5991,8 @@ function setupCosmicPresence() {
   });
   cosmicPresenceChannel
     .on('presence', { event: 'sync' }, () => {
-      const onlineIds = new Set(Object.keys(cosmicPresenceChannel.presenceState()));
-      Object.keys(U).forEach(id => { if (id !== 'me') U[id].on = onlineIds.has(id); });
+      cosmicOnlineIds = new Set(Object.keys(cosmicPresenceChannel.presenceState()));
+      Object.keys(U).forEach(id => { if (id !== 'me') U[id].on = cosmicOnlineIds.has(id); });
       if (U.me) U.me.on = true;
       if (cur != null) head();
       render();
@@ -6002,7 +6000,9 @@ function setupCosmicPresence() {
     .on('broadcast', { event: 'typing' }, message => {
       const data = message.payload || {};
       if (data.user_id === activeUserId || data.conversation_id !== cur) return;
+      if (typingPeerTimer) clearTimeout(typingPeerTimer);
       typer = data.typing ? (U[data.user_id]?.n || 'Someone') : '';
+      if (data.typing) typingPeerTimer = setTimeout(() => { typer = ''; if (cur != null) head(); }, 3500);
       if (cur != null) head();
     })
     .on('broadcast', { event: 'chat-new-message' }, async message => {
@@ -6047,7 +6047,9 @@ function subscribeToConversation(conversationId) {
     .on('broadcast', { event: 'typing' }, message => {
       const data = message.payload || {};
       if (data.user_id === activeUserId || data.conversation_id !== conversationId || cur !== conversationId) return;
+      if (typingPeerTimer) clearTimeout(typingPeerTimer);
       typer = data.typing ? (U[data.user_id]?.n || 'Someone') : '';
+      if (data.typing) typingPeerTimer = setTimeout(() => { typer = ''; if (cur === conversationId) head(); }, 3500);
       head();
     })
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversation_members', filter: 'conversation_id=eq.' + conversationId }, () => refreshReadReceipts(conversationId))
