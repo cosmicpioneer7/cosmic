@@ -7320,7 +7320,7 @@ async function submit(kind) {
       }
     } else {
       const loginValue = email;
-      if (/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(loginValue)) {
+      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginValue)) {
         const { data, error } = await sb.auth.signInWithPassword({ email: loginValue, password });
         if (error) throw error;
         await activateSession(data.session);
