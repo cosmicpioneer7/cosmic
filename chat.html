@@ -372,10 +372,14 @@ small {
   color: var(--muted);
 }
 .rt.u small {
-  color: #53a6fa;
+  color: #00c878;
 }
 :root[data-theme=light] .rt.u small {
-  color: #1d6fd6;
+  color: #00a866;
+}
+.rt.u .badge {
+  background: #00c878;
+  color: #032016;
 }
 .badge {
   background: #3b8ee8;
@@ -5942,6 +5946,18 @@ async function refreshDeliveryReceipts(conversationId) {
   if (cur === conversationId) msgs(false);
   render();
 }
+async function syncIncomingConversation(conversationId) {
+  if (!sb || !activeUserId) return;
+  const { error } = await sb.rpc('mark_conversation_delivered', { target_conversation: conversationId });
+  if (error) { console.warn('Delivery acknowledgement failed:', error.message); return; }
+  await loadConversations();
+  if (cosmicPresenceReady && cosmicPresenceChannel) {
+    await cosmicPresenceChannel.send({
+      type: 'broadcast', event: 'chat-delivered',
+      payload: { conversation_id: conversationId, recipient_id: activeUserId }
+    });
+  }
+}
 function broadcastTyping(isTyping) {
   if (!activeUserId || cur == null || !ST.typing) return;
   const sendOn = channel => {
@@ -5981,6 +5997,15 @@ function setupCosmicPresence() {
       if (data.user_id === activeUserId || data.conversation_id !== cur) return;
       typer = data.typing ? (U[data.user_id]?.n || 'Someone') : '';
       if (cur != null) head();
+    })
+    .on('broadcast', { event: 'chat-new-message' }, async message => {
+      const data = message.payload || {};
+      if (!data.conversation_id || !(data.recipient_ids || []).includes(activeUserId)) return;
+      await syncIncomingConversation(data.conversation_id);
+    })
+    .on('broadcast', { event: 'chat-delivered' }, message => {
+      const data = message.payload || {};
+      if (data.conversation_id) refreshDeliveryReceipts(data.conversation_id);
     })
     .subscribe(async status => {
       cosmicPresenceReady = status === 'SUBSCRIBED';
@@ -6207,6 +6232,12 @@ async function send(extra = {}) {
     $('#txt').style.height = 'auto';
     msgs(true);
     render();
+    if (cosmicPresenceReady && cosmicPresenceChannel) {
+      cosmicPresenceChannel.send({
+        type: 'broadcast', event: 'chat-new-message',
+        payload: { conversation_id: c.id, recipient_ids: [...(c.m || [])], sender_id: activeUserId }
+      }).catch(error => console.warn('Live chat notification failed:', error));
+    }
     haptic('send');
   } catch (e) {
     console.error('Message send failed:', e);
