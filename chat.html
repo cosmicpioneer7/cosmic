@@ -4174,6 +4174,13 @@ async function loadConversations() {
   // A message is delivered only after the recipient's client has fetched it.
   // This runs on sign-in/reconnect, so offline recipients acknowledge backlog here.
   await Promise.all(ids.map(id => sb.rpc('mark_conversation_delivered', { target_conversation: id })));
+  // Notify senders immediately after reconnect/sync; they update ticks without refreshing.
+  if (cosmicPresenceReady && cosmicPresenceChannel) {
+    await Promise.all(ids.map(id => cosmicPresenceChannel.send({
+      type: 'broadcast', event: 'chat-delivered',
+      payload: { conversation_id: id, recipient_id: activeUserId }
+    })));
+  }
   const messageIds = (messageResult.data || []).map(m => m.id);
   const receiptResult = messageIds.length
     ? await sb.from('message_receipts').select('message_id, user_id, delivered_at, read_at').in('message_id', messageIds)
@@ -6012,6 +6019,7 @@ function setupCosmicPresence() {
       if (cosmicPresenceReady) {
         const { error } = await cosmicPresenceChannel.track({ user_id: activeUserId, online_at: new Date().toISOString() });
         if (error) console.warn('Presence tracking failed:', error.message);
+        else await loadConversations();
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
         console.warn('Cosmic presence channel:', status);
       }
