@@ -7344,9 +7344,18 @@ async function submit(kind) {
     }
   } catch (e) {
     console.error('Authentication failed:', e);
-    const msg = (e && e.message) || 'Authentication failed. Please try again.';
-    if (/username|profiles_username_key|duplicate key/i.test(msg)) toast('That username is already taken. Choose another.');
-    else if (/invalid login credentials/i.test(msg)) toast('Incorrect email or password.');
+    let msg = (e && e.message) || 'Authentication failed. Please try again.';
+    // Supabase FunctionsHttpError carries the function response in e.context.
+    // Read its JSON body so username-login can return a useful auth error.
+    try {
+      if (e && e.context && typeof e.context.clone === 'function') {
+        const body = await e.context.clone().json();
+        if (body && body.error) msg = body.error;
+      }
+    } catch (_) {}
+    // Only a database uniqueness violation means a signup username is taken.
+    if (/profiles_username_key|duplicate key|unique constraint/i.test(msg)) toast('That username is already taken. Choose another.');
+    else if (/invalid login credentials|invalid username or password/i.test(msg)) toast('Incorrect username/email or password.');
     else if (/email not confirmed/i.test(msg)) toast('Please verify your email before signing in.');
     else toast(msg);
   } finally {
