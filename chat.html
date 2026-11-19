@@ -4044,7 +4044,12 @@ function profilePopup(c) {
 const rowChat = c => press(c, row(
   avTap(av(title(c), !c.g && !c.self && U[c.m[0]].on, 0, chatImg(c)), () => profilePopup(c), 'View ' + title(c) + ' profile'),
   title(c),
-  c.draft ? [el('span', { style: 'color:var(--accent)' }, 'Draft: '), c.draft] : prev(last(c)),
+  c.draft ? [el('span', { style: 'color:var(--accent)' }, 'Draft: '), c.draft] : (() => {
+    const lm = last(c);
+    return lm && lm.f === 'me'
+      ? [el('span', { class: 'tk' + (lm.read && ST.receipts ? ' r' : '') }, tickIcon(!!(lm.delivered || lm.read))), ' ', prev(lm)]
+      : prev(lm);
+  })(),
   el('div', { class: 'rt' + (c.unread ? ' u' : '') }, el('small', {}, tm(last(c)?.t || c.createdAt || Date.now())), c.unread ? el('span', { class: 'badge' + (c.mute ? ' mut' : '') }, c.unread) : c.pin ? ic('pin', 16) : null),
   () => open(c.id)
 ));
@@ -4137,7 +4142,8 @@ function mapDbMessage(row) {
     t: new Date(row.created_at).getTime(),
     ed: !!row.edited_at,
     del: row.deleted_at ? 'user' : false,
-    read: false
+    read: false,
+    delivered: false
   };
 }
 
@@ -4161,6 +4167,20 @@ async function loadConversations() {
   if (memberResult.error) throw memberResult.error;
   if (messageResult.error) throw messageResult.error;
 
+  // A message is delivered only after the recipient's client has fetched it.
+  // This runs on sign-in/reconnect, so offline recipients acknowledge backlog here.
+  await Promise.all(ids.map(id => sb.rpc('mark_conversation_delivered', { target_conversation: id })));
+  const messageIds = (messageResult.data || []).map(m => m.id);
+  const receiptResult = messageIds.length
+    ? await sb.from('message_receipts').select('message_id, user_id, delivered_at, read_at').in('message_id', messageIds)
+    : { data: [], error: null };
+  if (receiptResult.error) throw receiptResult.error;
+  const receiptMap = new Map();
+  (receiptResult.data || []).forEach(receipt => {
+    if (!receiptMap.has(receipt.message_id)) receiptMap.set(receipt.message_id, []);
+    receiptMap.get(receipt.message_id).push(receipt);
+  });
+
   const allMemberIds = [...new Set((memberResult.data || []).map(x => x.user_id))];
   const profileResult = allMemberIds.length
     ? await sb.from('profiles').select('id, username, display_name, avatar_url, bio').in('id', allMemberIds)
@@ -4178,7 +4198,18 @@ async function loadConversations() {
   const messageMap = new Map();
   (messageResult.data || []).forEach(row => {
     if (!messageMap.has(row.conversation_id)) messageMap.set(row.conversation_id, []);
-    messageMap.get(row.conversation_id).push(mapDbMessage(row));
+    const message = mapDbMessage(row);
+    const receipts = receiptMap.get(row.id) || [];
+    const otherMembers = (memberMap.get(row.conversation_id) || []).filter(m => m.user_id !== activeUserId);
+    if (message.f === 'me') {
+      message.delivered = otherMembers.length > 0 && otherMembers.every(member =>
+        receipts.some(receipt => receipt.user_id === member.user_id && receipt.delivered_at)
+      );
+      message.read = otherMembers.length > 0 && otherMembers.every(member =>
+        receipts.some(receipt => receipt.user_id === member.user_id && receipt.read_at)
+      );
+    }
+    messageMap.get(row.conversation_id).push(message);
   });
   C = (convResult.data || []).map(row => {
     const members = memberMap.get(row.id) || [];
@@ -4195,7 +4226,9 @@ async function loadConversations() {
       id: row.id, g: isGroup ? 1 : 0, k: row.kind === 'community' ? 1 : 0,
       name: row.title || (isGroup ? 'Group chat' : (U[others[0]]?.n || 'Private chat')),
       m: others, adm: members.filter(m => ['owner','admin','moderator'].includes(m.role)).map(m => m.user_id === activeUserId ? 'me' : m.user_id),
-      msgs: msgsForChat, unread: 0, n: members.length, dis: 0, createdAt: row.created_at
+      msgs: msgsForChat,
+      unread: msgsForChat.filter(message => message.f !== 'me' && message.t > (members.find(m => m.user_id === activeUserId)?.last_read_at ? new Date(members.find(m => m.user_id === activeUserId).last_read_at).getTime() : 0)).length,
+      n: members.length, dis: 0, createdAt: row.created_at
     };
   }).filter(c => c.g || c.m.length);
   render();
@@ -5879,19 +5912,35 @@ async function markConversationRead(conversationId) {
   await refreshReadReceipts(conversationId);
 }
 async function refreshReadReceipts(conversationId) {
+  await refreshDeliveryReceipts(conversationId);
+}
+async function refreshDeliveryReceipts(conversationId) {
   const c = find(conversationId);
   if (!sb || !c || !activeUserId) return;
-  const { data, error } = await sb.from('conversation_members')
-    .select('user_id, last_read_at').eq('conversation_id', conversationId);
-  if (error) { console.warn('Could not refresh read receipts:', error.message); return; }
-  const others = (data || []).filter(member => member.user_id !== activeUserId);
+  const ids = c.msgs.filter(m => m.f === 'me').map(m => m.id).filter(Boolean);
+  if (!ids.length) return;
+  const [membersResult, receiptsResult] = await Promise.all([
+    sb.from('conversation_members').select('user_id').eq('conversation_id', conversationId),
+    sb.from('message_receipts').select('message_id, user_id, delivered_at, read_at').in('message_id', ids)
+  ]);
+  if (membersResult.error || receiptsResult.error) {
+    console.warn('Could not refresh delivery receipts:', membersResult.error || receiptsResult.error);
+    return;
+  }
+  const others = (membersResult.data || []).filter(m => m.user_id !== activeUserId);
+  const byMessage = new Map();
+  (receiptsResult.data || []).forEach(r => {
+    if (!byMessage.has(r.message_id)) byMessage.set(r.message_id, []);
+    byMessage.get(r.message_id).push(r);
+  });
   c.msgs.forEach(message => {
     if (message.f !== 'me') return;
-    message.read = others.length > 0 && others.every(member =>
-      member.last_read_at && new Date(member.last_read_at).getTime() >= message.t
-    );
+    const receipts = byMessage.get(message.id) || [];
+    message.delivered = others.length > 0 && others.every(m => receipts.some(r => r.user_id === m.user_id && r.delivered_at));
+    message.read = others.length > 0 && others.every(m => receipts.some(r => r.user_id === m.user_id && r.read_at));
   });
   if (cur === conversationId) msgs(false);
+  render();
 }
 function broadcastTyping(isTyping) {
   if (!activeUserId || cur == null || !ST.typing) return;
@@ -5956,6 +6005,7 @@ function subscribeToConversation(conversationId) {
       head();
     })
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversation_members', filter: 'conversation_id=eq.' + conversationId }, () => refreshReadReceipts(conversationId))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'message_receipts' }, () => refreshDeliveryReceipts(conversationId))
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: 'conversation_id=eq.' + conversationId }, payload => {
       const c = find(conversationId);
       if (!c || !payload.new) return;
@@ -6067,7 +6117,11 @@ function msgs(force) {
     }
     const meta = el('span', { class: 'meta' });
     meta.append(m.st ? '★ ' : '', m.ed ? 'edited ' : '', tm(m.t));
-    if (me) meta.append(el('span', { class: 'tick' + (m.read && ST.receipts ? ' r' : '') }, tickIcon(!!(m.read && ST.receipts))));
+    if (me) {
+      const read = !!(m.read && ST.receipts);
+      const delivered = !!m.delivered;
+      meta.append(el('span', { class: 'tick' + (read ? ' r' : '') }, tickIcon(read || delivered)));
+    }
 
     const body = el('div', { class: 'bbody' });
     if (m.del) {
