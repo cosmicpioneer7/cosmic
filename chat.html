@@ -4153,7 +4153,7 @@ async function loadConversations() {
 
   const [convResult, memberResult, messageResult] = await Promise.all([
     sb.from('conversations').select('id, kind, title, created_by, created_at').in('id', ids),
-    sb.from('conversation_members').select('conversation_id, user_id, role').in('conversation_id', ids),
+    sb.from('conversation_members').select('conversation_id, user_id, role, last_read_at').in('conversation_id', ids),
     sb.from('messages').select('id, conversation_id, sender_id, body, message_type, created_at, edited_at, deleted_at')
       .in('conversation_id', ids).order('created_at', { ascending: true }).limit(1500)
   ]);
@@ -4185,6 +4185,12 @@ async function loadConversations() {
     const others = members.filter(m => m.user_id !== activeUserId).map(m => m.user_id);
     const isGroup = row.kind !== 'direct';
     const msgsForChat = messageMap.get(row.id) || [];
+    msgsForChat.forEach(message => {
+      if (message.f === 'me') message.read = others.length > 0 && others.every(userId => {
+        const member = members.find(item => item.user_id === userId);
+        return member && member.last_read_at && new Date(member.last_read_at).getTime() >= message.t;
+      });
+    });
     return {
       id: row.id, g: isGroup ? 1 : 0, k: row.kind === 'community' ? 1 : 0,
       name: row.title || (isGroup ? 'Group chat' : (U[others[0]]?.n || 'Private chat')),
@@ -5857,10 +5863,58 @@ function results(q, v) {
 }
 
 let activeMessageChannel = null;
+let typingStopTimer = null;
+let cosmicPresenceChannel = null;
+async function markConversationRead(conversationId) {
+  if (!sb || !activeUserId || !conversationId) return;
+  const { error } = await sb.from('conversation_members').update({ last_read_at: new Date().toISOString() }).eq('conversation_id', conversationId).eq('user_id', activeUserId);
+  if (error) console.warn('Could not update read status:', error.message);
+}
+async function refreshReadReceipts(conversationId) {
+  const c = find(conversationId);
+  if (!sb || !c || !activeUserId) return;
+  const { data, error } = await sb.from('conversation_members').select('user_id, last_read_at').eq('conversation_id', conversationId);
+  if (error) { console.warn('Could not refresh read receipts:', error.message); return; }
+  const others = (data || []).filter(member => member.user_id !== activeUserId);
+  c.msgs.forEach(message => { if (message.f === 'me') message.read = others.length > 0 && others.every(member => member.last_read_at && new Date(member.last_read_at).getTime() >= message.t); });
+  if (cur === conversationId) msgs(false);
+}
+function broadcastTyping(isTyping) {
+  if (!activeMessageChannel || !activeUserId) return;
+  activeMessageChannel.send({ type: 'broadcast', event: 'typing', payload: { user_id: activeUserId, typing: !!isTyping } }).catch(error => console.warn('Typing update failed:', error));
+}
+function stopTyping() {
+  if (typingStopTimer) clearTimeout(typingStopTimer);
+  typingStopTimer = null;
+  broadcastTyping(false);
+}
+function setupCosmicPresence() {
+  if (!sb || !activeUserId) return;
+  if (cosmicPresenceChannel) sb.removeChannel(cosmicPresenceChannel);
+  cosmicPresenceChannel = sb.channel('cosmic-online', { config: { presence: { key: activeUserId } } });
+  cosmicPresenceChannel.on('presence', { event: 'sync' }, () => {
+    const onlineIds = new Set(Object.keys(cosmicPresenceChannel.presenceState()));
+    Object.keys(U).forEach(id => { if (id !== 'me') U[id].on = onlineIds.has(id); });
+    if (U.me) U.me.on = true;
+    if (cur != null) head();
+    render();
+  }).subscribe(async status => {
+    if (status === 'SUBSCRIBED') await cosmicPresenceChannel.track({ user_id: activeUserId, online_at: new Date().toISOString() });
+  });
+}
 function subscribeToConversation(conversationId) {
   if (!sb) return;
   if (activeMessageChannel) sb.removeChannel(activeMessageChannel);
   activeMessageChannel = sb.channel('cosmic-chat-' + conversationId)
+    .on('broadcast', { event: 'typing' }, payload => {
+      const data = payload.payload || {};
+      if (data.user_id === activeUserId) return;
+      const c = find(conversationId);
+      if (!c) return;
+      typer = data.typing ? (U[data.user_id]?.n || 'Someone') : '';
+      if (cur === conversationId) head();
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversation_members', filter: 'conversation_id=eq.' + conversationId }, () => refreshReadReceipts(conversationId))
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: 'conversation_id=eq.' + conversationId }, payload => {
       const c = find(conversationId);
       if (!c || !payload.new) return;
@@ -5868,8 +5922,9 @@ function subscribeToConversation(conversationId) {
       if (c.msgs.some(m => m.id === message.id)) return;
       c.msgs.push(message);
       c.msgs.sort((a, b) => a.t - b.t);
-      if (cur === conversationId) msgs(true);
+      if (cur === conversationId) { msgs(true); if (message.f !== 'me') markConversationRead(conversationId); }
       render();
+      refreshReadReceipts(conversationId);
     })
     .subscribe(status => { if (status === 'CHANNEL_ERROR') console.warn('Realtime subscription failed for', conversationId); });
 }
@@ -5879,6 +5934,8 @@ function open(id) {
   if (!c) return;
   subscribeToConversation(id);
   cur = id;
+  markConversationRead(id);
+  refreshReadReceipts(id);
   typer = '';
   c.unread = 0;
   REPLY = null;
@@ -5899,6 +5956,7 @@ function open(id) {
 }
 
 function closeConv() {
+  stopTyping();
   if (activeMessageChannel && sb) { sb.removeChannel(activeMessageChannel); activeMessageChannel = null; }
   cur = null;
   typer = '';
@@ -5917,7 +5975,7 @@ function head() {
   const p = !c.g && !c.self && U[c.m[0]];
   $('#hav').replaceChildren(av(title(c), p && p.on, 38, chatImg(c)));
   $('#ht').textContent = title(c);
-  $('#hs').textContent = typer ? (c.g ? typer + ' is typing…' : 'typing…') : c.k ? fmtN(c.n) + ' members' : c.g ? ['You', ...c.m.map(k => U[k].n)].join(', ') : c.self ? 'Message yourself' : p.on ? 'online' : 'last seen today 18:02';
+  $('#hs').textContent = typer ? (c.g ? typer + ' is typing…' : 'typing…') : c.k ? fmtN(c.n) + ' members' : c.g ? ['You', ...c.m.map(k => U[k].n)].join(', ') : c.self ? 'Message yourself' : p && p.on ? 'online' : 'offline';
   $('#hx').replaceChildren(
     el('button', { class: 'ib', 'aria-label': 'Search in chat', onclick: () => { haptic('tap'); chatSearch(); } }, ic('search', 21)),
     el('button', { class: 'ib', 'aria-label': 'Chat options', onclick: () => { haptic('tap'); chatOpts(c); } }, ic('dots', 21))
@@ -6042,6 +6100,7 @@ async function send(extra = {}) {
       .select('id, conversation_id, sender_id, body, message_type, created_at, edited_at, deleted_at')
       .single();
     if (error) throw error;
+    stopTyping();
     const message = mapDbMessage(data);
     if (!c.msgs.some(m => m.id === message.id)) c.msgs.push(message);
     c.msgs.sort((a, b) => a.t - b.t);
@@ -6090,6 +6149,11 @@ $('#txt').oninput = e => {
   const c = cur != null && find(cur), v = elTxt.value;
   if (c) c.draft = v;
   syncAct();
+  if (c && v.trim()) {
+    broadcastTyping(true);
+    if (typingStopTimer) clearTimeout(typingStopTimer);
+    typingStopTimer = setTimeout(() => broadcastTyping(false), 1600);
+  } else stopTyping();
   const m = /(^|\s)@(\w*)$/.exec(v);
   if (!c || !c.g || !m) {
     mpop.hidden = true;
@@ -7522,6 +7586,7 @@ async function activateSession(session) {
     };
     U.me = { n: P.name, username: P.username, img: P.img, on: true };
     enter();
+    setupCosmicPresence();
     await loadConversations();
   } catch (e) {
     console.error('Profile bootstrap failed:', e);
@@ -7535,6 +7600,7 @@ if (sb) {
     if (session) setTimeout(() => activateSession(session), 0);
     else if (event === 'SIGNED_OUT') {
       activeUserId = null;
+      if (cosmicPresenceChannel) { sb.removeChannel(cosmicPresenceChannel); cosmicPresenceChannel = null; }
       $('#app').hidden = true;
       $('#auth').hidden = false;
     }
