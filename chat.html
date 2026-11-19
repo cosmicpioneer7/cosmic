@@ -6014,6 +6014,19 @@ function setupCosmicPresence() {
       const data = message.payload || {};
       if (data.conversation_id) refreshDeliveryReceipts(data.conversation_id);
     })
+    // Global database listeners work even when neither user has opened the chat.
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async payload => {
+      const row = payload.new || {};
+      if (!row.conversation_id || row.sender_id === activeUserId) return;
+      await syncIncomingConversation(row.conversation_id);
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'message_receipts' }, payload => {
+      const row = payload.new || payload.old || {};
+      const message = row.message_id
+        ? C.flatMap(chat => chat.msgs.map(m => ({ chat, m }))).find(x => x.m.id === row.message_id)
+        : null;
+      if (message) refreshDeliveryReceipts(message.chat.id);
+    })
     .subscribe(async status => {
       cosmicPresenceReady = status === 'SUBSCRIBED';
       if (cosmicPresenceReady) {
