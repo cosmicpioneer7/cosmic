@@ -418,6 +418,7 @@ small {
 .tk.r, .tick.r {
   color: #53bdeb;
 }
+.tick.pending { opacity: .72; }
 :root[data-theme=light] .tk.r,
 :root[data-theme=light] .tick.r {
   color: #1d8cf8;
@@ -5931,19 +5932,19 @@ async function refreshReadReceipts(conversationId) {
 async function refreshDeliveryReceipts(conversationId) {
   const c = find(conversationId);
   if (!sb || !c || !activeUserId) return;
-  const ids = c.msgs.filter(m => m.f === 'me').map(m => m.id).filter(Boolean);
+  // Only refresh messages that have not reached the final read state.
+  const ids = c.msgs.filter(m => m.f === 'me' && !m.read && !m.pending).map(m => m.id).filter(Boolean);
   if (!ids.length) return;
-  const [membersResult, receiptsResult] = await Promise.all([
-    sb.from('conversation_members').select('user_id').eq('conversation_id', conversationId),
-    sb.from('message_receipts').select('message_id, user_id, delivered_at, read_at').in('message_id', ids)
-  ]);
-  if (membersResult.error || receiptsResult.error) {
-    console.warn('Could not refresh delivery receipts:', membersResult.error || receiptsResult.error);
+  const others = (c.m || []).filter(id => id !== activeUserId);
+  if (!others.length) return;
+  const { data: receiptRows, error } = await sb.from('message_receipts')
+    .select('message_id, user_id, delivered_at, read_at').in('message_id', ids);
+  if (error) {
+    console.warn('Could not refresh delivery receipts:', error);
     return;
   }
-  const others = (membersResult.data || []).filter(m => m.user_id !== activeUserId);
   const byMessage = new Map();
-  (receiptsResult.data || []).forEach(r => {
+  (receiptRows || []).forEach(r => {
     if (!byMessage.has(r.message_id)) byMessage.set(r.message_id, []);
     byMessage.get(r.message_id).push(r);
   });
@@ -5953,8 +5954,16 @@ async function refreshDeliveryReceipts(conversationId) {
     message.delivered = others.length > 0 && others.every(m => receipts.some(r => r.user_id === m.user_id && r.delivered_at));
     message.read = others.length > 0 && others.every(m => receipts.some(r => r.user_id === m.user_id && r.read_at));
   });
-  if (cur === conversationId) msgs(false);
-  render();
+  // Patch only the tick indicators; rebuilding the entire chat/page causes visible lag.
+  if (cur === conversationId) {
+    c.msgs.filter(m => m.f === 'me' && !m.pending).forEach(m => {
+      const row = document.querySelector('#msgs .mrow[data-id="' + m.id + '"] .tick');
+      if (!row) return;
+      row.classList.toggle('r', !!(m.read && ST.receipts));
+      row.classList.remove('pending');
+      row.replaceChildren(tickIcon(!!(m.read || m.delivered)));
+    });
+  }
 }
 async function syncIncomingConversation(conversationId) {
   if (!sb || !activeUserId) return;
@@ -6068,6 +6077,14 @@ function subscribeToConversation(conversationId) {
       const c = find(conversationId);
       if (!c || !payload.new) return;
       const message = mapDbMessage(payload.new);
+      if (message.f === 'me') {
+        const pending = c.msgs.find(m => m.pending && m.b === message.b);
+        if (pending) {
+          Object.assign(pending, message, { pending: false });
+          if (cur === conversationId) msgs(false);
+          return;
+        }
+      }
       if (c.msgs.some(m => m.id === message.id)) return;
       c.msgs.push(message);
       c.msgs.sort((a, b) => a.t - b.t);
@@ -6176,7 +6193,9 @@ function msgs(force) {
     if (me) {
       const read = !!(m.read && ST.receipts);
       const delivered = !!m.delivered;
-      meta.append(el('span', { class: 'tick' + (read ? ' r' : '') }, tickIcon(read || delivered)));
+      meta.append(m.pending
+        ? el('span', { class: 'tick pending', 'aria-label': 'Sending' }, ic('clock', 12))
+        : el('span', { class: 'tick' + (read ? ' r' : '') }, tickIcon(read || delivered)));
     }
 
     const body = el('div', { class: 'bbody' });
@@ -6242,11 +6261,26 @@ const isPureEmoji = str => {
 
 async function send(extra = {}) {
   const c = cur != null ? find(cur) : null;
-  const body = $('#txt').value.trim();
+  const input = $('#txt');
+  const body = input.value.trim();
   if (!c || !body) return;
   if (!sb || !activeUserId) return toast('Please sign in again to send messages.');
-  const sendButton = $('#send');
-  sendButton.disabled = true;
+
+  // Optimistic UI: show the bubble and clear the composer before waiting for the network.
+  const localId = 'pending-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2));
+  const optimistic = {
+    id: localId, f: 'me', b: body, t: Date.now(),
+    read: false, delivered: false, pending: true
+  };
+  c.msgs.push(optimistic);
+  c.draft = '';
+  input.value = '';
+  input.style.height = 'auto';
+  syncAct();
+  stopTyping();
+  if (cur === c.id) msgs(true);
+  haptic('send');
+
   try {
     const payload = { conversation_id: c.id, sender_id: activeUserId, body, message_type: 'text' };
     const { data, error } = await sb.from('messages')
@@ -6254,28 +6288,32 @@ async function send(extra = {}) {
       .select('id, conversation_id, sender_id, body, message_type, created_at, edited_at, deleted_at')
       .single();
     if (error) throw error;
-    stopTyping();
-    const message = mapDbMessage(data);
-    if (!c.msgs.some(m => m.id === message.id)) c.msgs.push(message);
+
+    const saved = mapDbMessage(data);
+    const pending = c.msgs.find(m => m.id === localId);
+    if (pending) Object.assign(pending, saved, { pending: false });
+    else if (!c.msgs.some(m => m.id === saved.id)) c.msgs.push(saved);
     c.msgs.sort((a, b) => a.t - b.t);
-    c.draft = '';
-    $('#txt').value = '';
-    $('#txt').style.height = 'auto';
-    msgs(true);
-    render();
+    if (cur === c.id) msgs(false);
+
     if (cosmicPresenceReady && cosmicPresenceChannel) {
       cosmicPresenceChannel.send({
         type: 'broadcast', event: 'chat-new-message',
         payload: { conversation_id: c.id, recipient_ids: [...(c.m || [])], sender_id: activeUserId }
       }).catch(error => console.warn('Live chat notification failed:', error));
     }
-    haptic('send');
   } catch (e) {
     console.error('Message send failed:', e);
-    toast(e.message || 'Message could not be sent.');
-  } finally {
-    sendButton.disabled = false;
-    syncAct();
+    c.msgs = c.msgs.filter(m => m.id !== localId);
+    if (cur === c.id) {
+      if (!input.value.trim()) {
+        input.value = body;
+        c.draft = body;
+      }
+      msgs(false);
+      syncAct();
+    }
+    toast('Message not sent. ' + (e.message || 'Check your connection and try again.'));
   }
 }
 
