@@ -5929,41 +5929,70 @@ async function markConversationRead(conversationId) {
 async function refreshReadReceipts(conversationId) {
   await refreshDeliveryReceipts(conversationId);
 }
+const receiptRefreshInFlight = new Map();
+
 async function refreshDeliveryReceipts(conversationId) {
   const c = find(conversationId);
   if (!sb || !c || !activeUserId) return;
-  // Only refresh messages that have not reached the final read state.
-  const ids = c.msgs.filter(m => m.f === 'me' && !m.read && !m.pending).map(m => m.id).filter(Boolean);
-  if (!ids.length) return;
-  const others = (c.m || []).filter(id => id !== activeUserId);
-  if (!others.length) return;
-  const { data: receiptRows, error } = await sb.from('message_receipts')
-    .select('message_id, user_id, delivered_at, read_at').in('message_id', ids);
-  if (error) {
-    console.warn('Could not refresh delivery receipts:', error);
-    return;
-  }
-  const byMessage = new Map();
-  (receiptRows || []).forEach(r => {
-    if (!byMessage.has(r.message_id)) byMessage.set(r.message_id, []);
-    byMessage.get(r.message_id).push(r);
-  });
-  c.msgs.forEach(message => {
-    if (message.f !== 'me') return;
-    const receipts = byMessage.get(message.id) || [];
-    message.delivered = others.length > 0 && others.every(userId => receipts.some(r => r.user_id === userId && !!r.delivered_at));
-    message.read = others.length > 0 && others.every(userId => receipts.some(r => r.user_id === userId && !!r.read_at));
-  });
-  // Patch only the tick indicators; rebuilding the entire chat/page causes visible lag.
-  if (cur === conversationId) {
-    c.msgs.filter(m => m.f === 'me' && !m.pending).forEach(m => {
-      const row = document.querySelector('#msgs .b[data-id="' + m.id + '"] .tick');
-      if (!row) return;
-      row.classList.toggle('r', !!(m.read && ST.receipts));
-      row.classList.remove('pending');
-      row.replaceChildren(tickIcon(!!(m.read || m.delivered)));
+  if (receiptRefreshInFlight.has(conversationId)) return receiptRefreshInFlight.get(conversationId);
+
+  const task = (async () => {
+    const outgoing = c.msgs.filter(m => m.f === 'me' && !m.pending && m.id);
+    if (!outgoing.length) return;
+    const ids = outgoing.map(m => m.id);
+    const others = (c.m || []).filter(id => id && id !== activeUserId);
+    if (!others.length) return;
+
+    const [receiptResult, memberResult] = await Promise.all([
+      sb.from('message_receipts')
+        .select('message_id, user_id, delivered_at, read_at')
+        .in('message_id', ids),
+      sb.from('conversation_members')
+        .select('user_id, last_read_at')
+        .eq('conversation_id', conversationId)
+        .in('user_id', others)
+    ]);
+    if (receiptResult.error) throw receiptResult.error;
+    if (memberResult.error) throw memberResult.error;
+
+    const receiptsByMessage = new Map();
+    (receiptResult.data || []).forEach(receipt => {
+      if (!receiptsByMessage.has(receipt.message_id)) receiptsByMessage.set(receipt.message_id, new Map());
+      receiptsByMessage.get(receipt.message_id).set(receipt.user_id, receipt);
     });
-  }
+    const readThroughByUser = new Map((memberResult.data || []).map(member => [
+      member.user_id,
+      member.last_read_at ? new Date(member.last_read_at).getTime() : 0
+    ]));
+
+    outgoing.forEach(message => {
+      const perUser = receiptsByMessage.get(message.id) || new Map();
+      message.delivered = others.every(userId => !!perUser.get(userId)?.delivered_at);
+      message.read = others.every(userId => {
+        const receipt = perUser.get(userId);
+        const readAt = receipt?.read_at ? new Date(receipt.read_at).getTime() : 0;
+        return readAt > 0 || (readThroughByUser.get(userId) || 0) >= message.t;
+      });
+    });
+
+    if (cur !== conversationId) return;
+    outgoing.forEach(message => {
+      const tick = document.querySelector('#msgs .b[data-id="' + message.id + '"] .tick');
+      if (!tick) return;
+      const isRead = !!(message.read && ST.receipts);
+      tick.classList.toggle('r', isRead);
+      tick.classList.remove('pending');
+      tick.replaceChildren(tickIcon(isRead || !!message.delivered));
+      tick.setAttribute('aria-label', isRead ? 'Read' : message.delivered ? 'Delivered' : 'Sent');
+    });
+  })().catch(error => {
+    console.warn('Receipt refresh failed:', error);
+  }).finally(() => {
+    receiptRefreshInFlight.delete(conversationId);
+  });
+
+  receiptRefreshInFlight.set(conversationId, task);
+  return task;
 }
 async function syncIncomingConversation(conversationId) {
   if (!sb || !activeUserId) return;
