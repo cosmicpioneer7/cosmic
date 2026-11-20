@@ -5960,18 +5960,34 @@ async function syncIncomingConversation(conversationId) {
   if (!sb || !activeUserId) return;
   const { error } = await sb.rpc('mark_conversation_delivered', { target_conversation: conversationId });
   if (error) { console.warn('Delivery acknowledgement failed:', error.message); return; }
-  // Update only this conversation's newest message; never reload every chat/history on delivery.
+  // Fetch only messages newer than this conversation's last locally known message.
+  // Include a timestamp overlap and de-duplicate by id to avoid same-millisecond gaps.
   const c = find(conversationId);
-  const { data: latest, error: latestError } = await sb.from('messages')
-    .select('id, conversation_id, sender_id, body, message_type, created_at, edited_at, deleted_at')
-    .eq('conversation_id', conversationId).order('created_at', { ascending: false }).limit(1).maybeSingle();
-  if (latestError) console.warn('Latest message sync failed:', latestError.message);
-  if (latest && c && !c.msgs.some(m => m.id === latest.id)) {
-    c.msgs.push(mapDbMessage(latest));
-    c.msgs.sort((a, b) => a.t - b.t);
-    if (cur !== conversationId && latest.sender_id !== activeUserId) c.unread = (c.unread || 0) + 1;
-    if (cur === conversationId) { msgs(true); await markConversationRead(conversationId); }
-    render();
+  if (c) {
+    const lastKnown = c.msgs.reduce((max, item) => Math.max(max, item.t || 0), 0);
+    let query = sb.from('messages')
+      .select('id, conversation_id, sender_id, body, message_type, created_at, edited_at, deleted_at')
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: true }).limit(100);
+    if (lastKnown) query = query.gte('created_at', new Date(lastKnown).toISOString());
+    const { data: freshMessages, error: syncError } = await query;
+    if (syncError) console.warn('Incremental message sync failed:', syncError.message);
+    let addedIncoming = 0;
+    (freshMessages || []).forEach(row => {
+      if (c.msgs.some(item => item.id === row.id)) return;
+      const item = mapDbMessage(row);
+      c.msgs.push(item);
+      if (item.f !== 'me') addedIncoming++;
+    });
+    if (addedIncoming) {
+      c.msgs.sort((x, y) => x.t - y.t);
+      if (cur !== conversationId) c.unread = (c.unread || 0) + addedIncoming;
+      else {
+        msgs(true);
+        await markConversationRead(conversationId);
+      }
+      render();
+    }
   }
   if (cosmicPresenceReady && cosmicPresenceChannel) {
     await cosmicPresenceChannel.send({
