@@ -3368,7 +3368,7 @@ h2 {
 .don-copy{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--field);color:var(--muted);flex:none;transition:background .2s,color .2s,transform .2s}
 .don-copy.ok{background:var(--chip);color:var(--accent);transform:scale(1.08)}
 @media (prefers-reduced-motion:reduce){.don-frame i{animation:none}.don-pay,.don-copy{transition:none}}
-</style>
+.comm-hero{display:flex;align-items:center;gap:13px;padding:17px;margin:8px 0 20px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(125deg,rgba(37,116,220,.18),rgba(35,54,88,.12));box-shadow:0 10px 30px rgba(0,0,0,.12)}.comm-orb{width:54px;height:54px;flex:0 0 54px;border-radius:18px;display:grid;place-items:center;background:rgba(45,139,255,.18);color:#55adff}.comm-hero>div:nth-child(2){flex:1;min-width:0}.comm-hero b{font-size:15px}.comm-hero p,.comm-card p,.comm-empty p{margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.45}.comm-hero .pill{flex:0 0 auto}.comm-filter{margin:12px 0 18px}.comm-card{padding:14px;margin:9px 0;border:1px solid var(--line);border-radius:19px;background:var(--surface,rgba(255,255,255,.035));box-shadow:0 6px 20px rgba(0,0,0,.08)}.comm-card-top{display:flex;align-items:center;gap:12px;cursor:pointer}.comm-card-copy{display:flex;flex-direction:column;gap:3px;min-width:0}.comm-card-copy b{font-size:15px}.comm-card-copy small,.comm-card-foot{font-size:11px;color:var(--muted)}.comm-card p{margin:10px 0 12px}.comm-card-foot{display:flex;align-items:center;justify-content:space-between;gap:10px}.comm-empty{text-align:center;padding:34px 18px;border:1px dashed var(--line);border-radius:20px;margin-top:14px}.comm-empty-icon{width:58px;height:58px;margin:0 auto 12px;display:grid;place-items:center;border-radius:20px;background:rgba(45,139,255,.15);color:#55adff}.comm-empty>b{font-size:15px}.comm-empty .pill{margin-top:14px}</style>
 <script>
 try {
   document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark';
@@ -3940,7 +3940,9 @@ let tab = 'chats', cur = null, typer = '';
 
 let C = []; // Conversations are loaded from Supabase after authentication.
 
-let K = []; // Communities are loaded from Supabase after authentication.\nlet COMMUNITY_QUERY = '', COMMUNITY_TIMER = null;
+let K = []; // Communities are loaded from Supabase after authentication.
+let COMMUNITY_QUERY = '', COMMUNITY_TIMER = null;
+let COMMUNITY_VIEW = 'all';
 
 const find = id => C.find(c => c.id === id) || K.find(c => c.id === id);
 const title = c => c.g ? c.name : c.self ? (P.name || 'Cosmicpioneer') + ' (You)' : (U[c.m[0]]?.n || 'Deleted User');
@@ -4055,17 +4057,17 @@ const rowChat = c => press(c, row(
   () => open(c.id)
 ));
 
-const rowComm = k => row(avTap(av(k.name, 0, 0, k.img), () => communityInfo(k.id), 'View ' + k.name + ' info'), k.name,
-  fmtN(k.n) + ' members · ' + (k.joined ? 'Joined · ' : '') + (k.desc || 'Community'),
-  k.joined ? el('div', { class: 'rt' }, el('small', {}, 'Open')) : btn(k.pend ? 'Requested' : 'Join', async () => {
-    if (k.pend) return;
-    try {
-      const { data, error } = await sb.rpc('join_community', { p_conversation_id: k.id });
-      if (error) throw error;
-      await loadConversations(); await loadCommunities();
-      toast(data === 'requested' ? 'Join request sent to admins.' : 'Joined ' + k.name);
-    } catch (e) { console.error(e); toast(e.message || 'Could not join community.'); }
-  }), () => k.joined ? open(k.id) : communityInfo(k.id));
+const rowComm = k => el('div',{class:'comm-card'},
+  el('div',{class:'comm-card-top',onclick:()=>communityInfo(k.id)},av(k.name,0,54,k.img),el('div',{class:'comm-card-copy'},el('b',{},k.name),el('small',{},fmtN(k.n)+' members'))),
+  el('p',{},k.desc||'A place to connect and share.'),
+  el('div',{class:'comm-card-foot'},el('span',{},k.approve?'Admin approval required':'Public community'),
+    k.joined?btn('Open community',()=>open(k.id)):btn(k.pend?'Requested':'Join community',async()=>{
+      if(k.pend)return;
+      try{const{data,error}=await sb.rpc('join_community',{p_conversation_id:k.id});if(error)throw error;await loadConversations();await loadCommunities();toast(data==='requested'?'Join request sent to admins.':'Joined '+k.name);}
+      catch(e){console.error(e);toast(e.message||'Could not join community.');}
+    }))
+  )
+);
 
 function userProfileSheet(k, backFn) {
   if (!k || k === 'me') {
@@ -4174,7 +4176,7 @@ async function loadConversations() {
   if (membershipResult.error) throw membershipResult.error;
   const memberships = membershipResult.data || [];
   const ids = [...new Set(memberships.map(x => x.conversation_id))];
-  if (!ids.length) { C = []; render(); return; }
+  if (!ids.length) { C = []; render(); await loadCommunities(); return; }
 
   const [convResult, memberResult, messageResult] = await Promise.all([
     sb.from('conversations').select('id, kind, title, created_by, created_at').in('id', ids),
@@ -4269,6 +4271,7 @@ async function loadConversations() {
     };
   }).filter(c => !c.k && (c.g || c.m.length));
   render();
+  await loadCommunities();
 }
 
 async function loadCommunities() {
@@ -4276,9 +4279,31 @@ async function loadCommunities() {
   try {
     const { data, error } = await sb.rpc('discover_communities', { p_search: COMMUNITY_QUERY || '' });
     if (error) throw error;
-    K = (data || []).map(x => ({ id: x.id, g: 1, k: 1, name: x.title || 'Community', desc: x.description || '', n: Number(x.member_count || 0), approve: !!x.requires_approval, joined: !!x.joined, pend: false, msgs: [], m: [], adm: [], unread: 0 }));
+    const rows = data || [], joinedIds = rows.filter(x => x.joined).map(x => x.id);
+    let memberRows = [], messageRows = [];
+    if (joinedIds.length) {
+      const [mr, xr] = await Promise.all([
+        sb.from('conversation_members').select('conversation_id,user_id,role,last_read_at').in('conversation_id', joinedIds),
+        sb.from('messages').select('id,conversation_id,sender_id,body,message_type,created_at,edited_at,deleted_at').in('conversation_id', joinedIds).order('created_at',{ascending:true}).limit(1500)
+      ]);
+      if (mr.error) throw mr.error; if (xr.error) throw xr.error;
+      memberRows = mr.data || []; messageRows = xr.data || [];
+      const profileIds = [...new Set(memberRows.map(x => x.user_id))];
+      if (profileIds.length) {
+        const pr = await sb.from('profiles').select('id,username,display_name,avatar_url,bio').in('id', profileIds);
+        if (pr.error) throw pr.error;
+        (pr.data || []).forEach(p => { U[p.id] = { n:p.display_name || p.username, username:p.username, img:p.avatar_url || '', bio:p.bio || '', on:cosmicOnlineIds.has(p.id) }; });
+      }
+    }
+    const byMembers = new Map(), byMessages = new Map();
+    memberRows.forEach(m => { if(!byMembers.has(m.conversation_id)) byMembers.set(m.conversation_id,[]); byMembers.get(m.conversation_id).push(m); });
+    messageRows.forEach(row => { if(!byMessages.has(row.conversation_id)) byMessages.set(row.conversation_id,[]); byMessages.get(row.conversation_id).push(mapDbMessage(row)); });
+    K = rows.map(x => {
+      const members = byMembers.get(x.id) || [], msgsFor = byMessages.get(x.id) || [];
+      return { id:x.id,g:1,k:1,name:x.title || 'Community',desc:x.description || '',n:Number(x.member_count || 0),approve:!!x.requires_approval,joined:!!x.joined,pend:false,msgs:msgsFor,m:members.filter(m=>m.user_id!==activeUserId).map(m=>m.user_id),adm:members.filter(m=>['owner','admin','moderator'].includes(m.role)).map(m=>m.user_id===activeUserId?'me':m.user_id),unread:0,createdAt:Date.now() };
+    });
     if (tab === 'comm') render();
-  } catch (e) { console.error('Community discovery failed:', e); toast('Could not load communities.'); }
+  } catch (e) { console.error('Community discovery failed:', e); toast('Could not load communities: ' + (e.message || 'Please try again.')); }
 }
 function communityInfo(id) {
   const k = K.find(x => x.id === id); if (!k) return;
@@ -4586,13 +4611,19 @@ function vFriends(v) {
 }
 
 function vComm(v) {
-  const search = el('input', { class: 'field', placeholder: 'Discover communities…', value: COMMUNITY_QUERY || '' });
-  const mine = K.filter(c => c.joined), discover = K.filter(c => !c.joined);
-  search.oninput = () => { COMMUNITY_QUERY = search.value; clearTimeout(COMMUNITY_TIMER); COMMUNITY_TIMER = setTimeout(loadCommunities, 250); };
-  v.replaceChildren(el('h2', {}, T('Communities')), search,
-    ...(mine.length ? [el('div', { class: 'sec' }, 'Your communities'), ...mine.map(rowComm)] : []),
-    ...(discover.length ? [el('div', { class: 'sec' }, 'Discover'), ...discover.map(rowComm)] : []),
-    !K.length ? el('p', { class: 'empty' }, 'No communities yet. Create one or search to discover communities.') : null);
+  const hero = el('div', { class: 'comm-hero' }, el('div', { class: 'comm-orb' }, ic('globe',30)),
+    el('div', {}, el('b', {}, 'Find your universe'), el('p', {}, 'Join communities around the things you love, or create a space of your own.')),
+    btn('Create', () => create()));
+  const search = el('input', { class:'field', placeholder:'Search communities…', value:COMMUNITY_QUERY || '' });
+  search.oninput = () => { COMMUNITY_QUERY=search.value; clearTimeout(COMMUNITY_TIMER); COMMUNITY_TIMER=setTimeout(loadCommunities,300); };
+  const tabs = el('div',{class:'seg comm-filter'},...[['all','All'],['joined','Joined'],['discover','Discover']].map(([key,label])=>el('button',{class:COMMUNITY_VIEW===key?'on':'',onclick:()=>{COMMUNITY_VIEW=key;render();}},label)));
+  const filtered=K.filter(c=>COMMUNITY_VIEW==='all'||(COMMUNITY_VIEW==='joined'?c.joined:!c.joined));
+  const mine=filtered.filter(c=>c.joined), discover=filtered.filter(c=>!c.joined);
+  const empty=el('div',{class:'comm-empty'},el('div',{class:'comm-empty-icon'},ic('globe',26)),el('b',{},COMMUNITY_VIEW==='joined'?'No joined communities yet':'No communities found'),
+    el('p',{},COMMUNITY_VIEW==='joined'?'Join a community from Discover and it will appear here.':'Try another search, or create the first community.'),btn('Create a community',()=>create()));
+  v.replaceChildren(hero,el('h2',{},'Communities'),search,tabs,
+    ...(mine.length?[el('div',{class:'sec'},'Your communities'),...mine.map(rowComm)]:[]),
+    ...(discover.length?[el('div',{class:'sec'},'Discover communities'),...discover.map(rowComm)]:[]),!filtered.length?empty:null);
 }
 
 const isAdmin = c => !!(c && c.adm && c.adm.includes('me'));
@@ -7992,6 +8023,7 @@ async function activateSession(session) {
     enter();
     setupCosmicPresence();
     await loadConversations();
+    await loadCommunities();
   } catch (e) {
     console.error('Profile bootstrap failed:', e);
     activeUserId = null;
