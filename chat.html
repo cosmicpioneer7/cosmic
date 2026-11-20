@@ -5951,8 +5951,8 @@ async function refreshDeliveryReceipts(conversationId) {
   c.msgs.forEach(message => {
     if (message.f !== 'me') return;
     const receipts = byMessage.get(message.id) || [];
-    message.delivered = others.length > 0 && others.every(m => receipts.some(r => r.user_id === m.user_id && r.delivered_at));
-    message.read = others.length > 0 && others.every(m => receipts.some(r => r.user_id === m.user_id && r.read_at));
+    message.delivered = others.length > 0 && others.every(userId => receipts.some(r => r.user_id === userId && !!r.delivered_at));
+    message.read = others.length > 0 && others.every(userId => receipts.some(r => r.user_id === userId && !!r.read_at));
   });
   // Patch only the tick indicators; rebuilding the entire chat/page causes visible lag.
   if (cur === conversationId) {
