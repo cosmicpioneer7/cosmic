@@ -5957,7 +5957,7 @@ async function refreshDeliveryReceipts(conversationId) {
   // Patch only the tick indicators; rebuilding the entire chat/page causes visible lag.
   if (cur === conversationId) {
     c.msgs.filter(m => m.f === 'me' && !m.pending).forEach(m => {
-      const row = document.querySelector('#msgs .mrow[data-id="' + m.id + '"] .tick');
+      const row = document.querySelector('#msgs .b[data-id="' + m.id + '"] .tick');
       if (!row) return;
       row.classList.toggle('r', !!(m.read && ST.receipts));
       row.classList.remove('pending');
@@ -6184,7 +6184,7 @@ function msgs(force) {
     }
     const me = m.f === 'me', seq = prevF === m.f, first = !seq;
     prevF = m.f;
-    const b = el('div', { class: 'b ' + (me ? 'me' : 'th') + (first ? ' first' : '') + (m.del ? ' gone' : '') + ((m.img || m.imgs) && !m.b && !m.del && !m.once ? ' pic' : '') + (m.stk && !m.del ? ' stkb' : '') + (m.id === c.fresh ? ' bin' : '') });
+    const b = el('div', { class: 'b ' + (me ? 'me' : 'th') + (first ? ' first' : '') + (m.del ? ' gone' : '') + ((m.img || m.imgs) && !m.b && !m.del && !m.once ? ' pic' : '') + (m.stk && !m.del ? ' stkb' : '') + (m.id === c.fresh ? ' bin' : ''), 'data-id': m.id || '' });
     if (c.g && !me && first) {
       b.append(el('div', { class: 'who', style: 'color:hsl(' + hue(U[m.f].n) + ' 80% 72%);cursor:pointer', onclick: e => { e.stopPropagation(); haptic('tap'); userProfileSheet(m.f); } }, U[m.f].n));
     }
