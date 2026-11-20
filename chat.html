@@ -3368,7 +3368,9 @@ h2 {
 .don-copy{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--field);color:var(--muted);flex:none;transition:background .2s,color .2s,transform .2s}
 .don-copy.ok{background:var(--chip);color:var(--accent);transform:scale(1.08)}
 @media (prefers-reduced-motion:reduce){.don-frame i{animation:none}.don-pay,.don-copy{transition:none}}
-.comm-hero{display:flex;align-items:center;gap:13px;padding:17px;margin:8px 0 20px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(125deg,rgba(37,116,220,.18),rgba(35,54,88,.12));box-shadow:0 10px 30px rgba(0,0,0,.12)}.comm-orb{width:54px;height:54px;flex:0 0 54px;border-radius:18px;display:grid;place-items:center;background:rgba(45,139,255,.18);color:#55adff}.comm-hero>div:nth-child(2){flex:1;min-width:0}.comm-hero b{font-size:15px}.comm-hero p,.comm-card p,.comm-empty p{margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.45}.comm-hero .pill{flex:0 0 auto}.comm-filter{margin:12px 0 18px}.comm-card{padding:14px;margin:9px 0;border:1px solid var(--line);border-radius:19px;background:var(--surface,rgba(255,255,255,.035));box-shadow:0 6px 20px rgba(0,0,0,.08)}.comm-card-top{display:flex;align-items:center;gap:12px;cursor:pointer}.comm-card-copy{display:flex;flex-direction:column;gap:3px;min-width:0}.comm-card-copy b{font-size:15px}.comm-card-copy small,.comm-card-foot{font-size:11px;color:var(--muted)}.comm-card p{margin:10px 0 12px}.comm-card-foot{display:flex;align-items:center;justify-content:space-between;gap:10px}.comm-empty{text-align:center;padding:34px 18px;border:1px dashed var(--line);border-radius:20px;margin-top:14px}.comm-empty-icon{width:58px;height:58px;margin:0 auto 12px;display:grid;place-items:center;border-radius:20px;background:rgba(45,139,255,.15);color:#55adff}.comm-empty>b{font-size:15px}.comm-empty .pill{margin-top:14px}</style>
+
+.comm-hero{display:flex;align-items:center;gap:13px;padding:17px;margin:8px 0 20px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(125deg,rgba(37,116,220,.18),rgba(35,54,88,.12));box-shadow:0 10px 30px rgba(0,0,0,.12)}.comm-orb{width:54px;height:54px;flex:0 0 54px;border-radius:18px;display:grid;place-items:center;background:rgba(45,139,255,.18);color:#55adff}.comm-hero>div:nth-child(2){flex:1;min-width:0}.comm-hero b{font-size:15px}.comm-hero p,.comm-card p,.comm-empty p{margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.45}.comm-hero .pill{flex:0 0 auto}.comm-filter{margin:12px 0 18px}.comm-card{padding:14px;margin:9px 0;border:1px solid var(--line);border-radius:19px;background:var(--surface,rgba(255,255,255,.035));box-shadow:0 6px 20px rgba(0,0,0,.08)}.comm-card-top{display:flex;align-items:center;gap:12px;cursor:pointer}.comm-card-copy{display:flex;flex-direction:column;gap:3px;min-width:0}.comm-card-copy b{font-size:15px}.comm-card-copy small,.comm-card-foot{font-size:11px;color:var(--muted)}.comm-card p{margin:10px 0 12px}.comm-card-foot{display:flex;align-items:center;justify-content:space-between;gap:10px}.comm-empty{text-align:center;padding:34px 18px;border:1px dashed var(--line);border-radius:20px;margin-top:14px}.comm-empty-icon{width:58px;height:58px;margin:0 auto 12px;display:grid;place-items:center;border-radius:20px;background:rgba(45,139,255,.15);color:#55adff}.comm-empty>b{font-size:15px}.comm-empty .pill{margin-top:14px}
+</style>
 <script>
 try {
   document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark';
@@ -8023,7 +8025,6 @@ async function activateSession(session) {
     enter();
     setupCosmicPresence();
     await loadConversations();
-    await loadCommunities();
   } catch (e) {
     console.error('Profile bootstrap failed:', e);
     activeUserId = null;
