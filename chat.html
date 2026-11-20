@@ -7995,40 +7995,62 @@ if (vv) {
 addEventListener('resize', fit);
 // Load the signed-in user's profile from the database before opening the app.
 let activeUserId = null;
+let activationTask = null, activationTaskUserId = null;
 async function activateSession(session) {
   if (!session || !session.user || !sb) return;
-  if (activeUserId === session.user.id && !$('#app').hidden) return;
-  activeUserId = session.user.id;
-  try {
-    let { data: profile, error } = await sb.from('profiles')
-      .select('id, username, display_name, avatar_url, bio')
-      .eq('id', session.user.id).maybeSingle();
-    if (error) throw error;
-    if (!profile) {
-      const meta = session.user.user_metadata || {};
-      const payload = {
-        id: session.user.id,
-        username: unClean(meta.username || ('user_' + session.user.id.slice(0, 8))),
-        display_name: (meta.full_name || session.user.email || 'Cosmic User').toString().slice(0, 80)
+  const uid = session.user.id;
+  if (activeUserId === uid && !$('#app').hidden) return;
+  if (activationTask && activationTaskUserId === uid) return activationTask;
+  activeUserId = uid;
+  activationTaskUserId = uid;
+  activationTask = (async () => {
+    try {
+      let { data: profile, error } = await sb.from('profiles')
+        .select('id, username, display_name, avatar_url, bio')
+        .eq('id', uid).maybeSingle();
+      if (error) throw new Error('Profile lookup failed: ' + error.message);
+      if (!profile) {
+        const meta = session.user.user_metadata || {};
+        const payload = {
+          id: uid,
+          username: unClean(meta.username || ('user_' + uid.slice(0, 8))),
+          display_name: (meta.full_name || session.user.email || 'Cosmic User').toString().slice(0, 80)
+        };
+        const created = await sb.from('profiles').upsert(payload, { onConflict: 'id' })
+          .select('id, username, display_name, avatar_url, bio').single();
+        if (created.error) throw new Error('Profile setup failed: ' + created.error.message);
+        profile = created.data;
+      }
+      P = {
+        ...P, name: profile.display_name || session.user.email || 'Cosmic User',
+        username: profile.username || '', user: profile.username || '',
+        img: profile.avatar_url || '', bio: profile.bio || ''
       };
-      const created = await sb.from('profiles').upsert(payload, { onConflict: 'id' })
-        .select('id, username, display_name, avatar_url, bio').single();
-      if (created.error) throw created.error;
-      profile = created.data;
+      U.me = { n: P.name, username: P.username, img: P.img, on: true };
+      enter();
+    } catch (e) {
+      console.error('Profile bootstrap failed:', e);
+      activeUserId = null;
+      $('#app').hidden = true;
+      $('#auth').hidden = false;
+      toast(e.message || 'Could not load your profile. Please try again.');
+      return;
     }
-    P = {
-      ...P, name: profile.display_name || session.user.email || 'Cosmic User',
-      username: profile.username || '', user: profile.username || '',
-      img: profile.avatar_url || '', bio: profile.bio || ''
-    };
-    U.me = { n: P.name, username: P.username, img: P.img, on: true };
-    enter();
-    setupCosmicPresence();
-    await loadConversations();
-  } catch (e) {
-    console.error('Profile bootstrap failed:', e);
-    activeUserId = null;
-    toast('Signed in, but your profile could not load. Check that the Cosmic Chat SQL setup has been run.');
+    // A conversation-list failure must not undo a valid Supabase login.
+    try {
+      setupCosmicPresence();
+      await loadConversations();
+    } catch (e) {
+      console.error('Chat data loading failed:', e);
+      toast('You are signed in, but chats could not load: ' + (e.message || 'Please refresh.'));
+    }
+  })();
+  try { await activationTask; }
+  finally {
+    if (activationTaskUserId === uid) {
+      activationTask = null;
+      activationTaskUserId = null;
+    }
   }
 }
 
