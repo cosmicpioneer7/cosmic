@@ -372,14 +372,14 @@ small {
   color: var(--muted);
 }
 .rt.u small {
-  color: #00c878;
+  color: #53bdeb;
 }
 :root[data-theme=light] .rt.u small {
-  color: #00a866;
+  color: #1d8cf8;
 }
 .rt.u .badge {
-  background: #00c878;
-  color: #032016;
+  background: #168cff;
+  color: #ffffff;
 }
 .badge {
   background: #3b8ee8;
@@ -3958,11 +3958,7 @@ const row = (a, t, s, right, fn, silentHaptic = false) => {
 const prev = m => {
   if (!m) return '';
   if (m.del) return m.del === 'admin' ? 'Deleted by admin' : 'Message deleted';
-  const t = m.doc ? '📄 ' + m.doc.name : m.stk ? 'Sticker' : m.imgs ? 'Photos' : m.once ? 'View-once photo' : m.img ? 'Photo' : m.au ? 'Voice message' : m.poll ? 'Poll: ' + m.poll.q : m.ev ? 'Event: ' + m.ev.t : m.b;
-  return [
-    m.f === 'me' ? el('span', { class: 'tk' + (m.read && ST.receipts ? ' r' : '') }, tickIcon(!!(m.read && ST.receipts))) : null,
-    (m.f !== 'me' && m.g ? U[m.f].n + ': ' : '') + t
-  ];
+  return m.doc ? '📄 ' + m.doc.name : m.stk ? 'Sticker' : m.imgs ? 'Photos' : m.once ? 'View-once photo' : m.img ? 'Photo' : m.au ? 'Voice message' : m.poll ? 'Poll: ' + m.poll.q : m.ev ? 'Event: ' + m.ev.t : (m.b || '');
 };
 
 const avTap = (node, fn, label) => {
