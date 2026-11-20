@@ -4155,7 +4155,7 @@ function mapDbMessage(row) {
     if (media.kind === 'audio') message.au = media.url;
   }
   if (structured) {
-    if (structured.kind === 'poll') message.poll = structured.value;
+    if (structured.kind === 'poll') message.poll = { ...structured.value, o: (structured.value.o || []).map(o => ({ ...o, v: [] })) };
     if (structured.kind === 'event') message.ev = structured.value;
     if (structured.kind === 'sticker') message.stk = structured.value;
   }
@@ -4193,6 +4193,15 @@ async function loadConversations() {
     })));
   }
   const messageIds = (messageResult.data || []).map(m => m.id);
+  const [hiddenResult, votesResult] = await Promise.all([
+    sb.from('message_user_deletions').select('message_id').eq('user_id', activeUserId).in('message_id', messageIds.length ? messageIds : ['00000000-0000-0000-0000-000000000000']),
+    sb.from('poll_votes').select('message_id, user_id, option_index').in('message_id', messageIds.length ? messageIds : ['00000000-0000-0000-0000-000000000000'])
+  ]);
+  if (hiddenResult.error) throw hiddenResult.error;
+  if (votesResult.error) throw votesResult.error;
+  const hiddenIds = new Set((hiddenResult.data || []).map(x => x.message_id));
+  const pollVotes = new Map();
+  (votesResult.data || []).forEach(v => { if (!pollVotes.has(v.message_id)) pollVotes.set(v.message_id, []); pollVotes.get(v.message_id).push(v); });
   const receiptResult = messageIds.length
     ? await sb.from('message_receipts').select('message_id, user_id, delivered_at, read_at').in('message_id', messageIds)
     : { data: [], error: null };
@@ -4219,9 +4228,11 @@ async function loadConversations() {
   });
   const messageMap = new Map();
   (messageResult.data || []).forEach(row => {
+    if (hiddenIds.has(row.id)) return;
     if (!messageMap.has(row.conversation_id)) messageMap.set(row.conversation_id, []);
     const message = mapDbMessage(row);
     const receipts = receiptMap.get(row.id) || [];
+    if (message.poll) { (pollVotes.get(row.id) || []).forEach(v => { if (message.poll.o[v.option_index]) message.poll.o[v.option_index].v.push(v.user_id === activeUserId ? 'me' : v.user_id); }); }
     const otherMembers = (memberMap.get(row.conversation_id) || []).filter(m => m.user_id !== activeUserId);
     if (message.f === 'me') {
       message.delivered = otherMembers.length > 0 && otherMembers.every(member =>
@@ -4747,21 +4758,58 @@ function fallbackCopy(txt, label) {
 function msgMenu(c, m) {
   const me = m.f === 'me';
   const copyable = m.b || m.stk || (m.doc && m.doc.name) || '';
-  const delRow = (me || canMod(c, m)) ? row(ic('trash'), 'Delete', '', null, () => closeSheet(() => { m.del = me ? 1 : 'admin'; m.b = null; m.img = 0; m.au = null; m.poll = null; m.doc = null; haptic('heavy'); msgs(); })) : null;
-  if (delRow) delRow.classList.add('danger');
+  const removeMine = row(ic('trash'), 'Delete for me', 'Only removes it from your chat', null, async () => {
+    closeSheet(async () => {
+      try {
+        const { error } = await sb.from('message_user_deletions').insert({ message_id: m.id, user_id: activeUserId });
+        if (error && error.code !== '23505') throw error;
+        c.msgs = c.msgs.filter(x => x.id !== m.id);
+        haptic('success'); msgs(); render();
+      } catch (e) { toast('Could not delete message: ' + e.message); }
+    });
+  });
+  const removeEveryone = me ? row(ic('trash'), 'Delete for everyone', 'Remove this message for all chat members', null, async () => {
+    closeSheet(async () => {
+      try {
+        const { error } = await sb.from('messages').update({ deleted_at: new Date().toISOString(), body: '[[COSMIC_DELETED_V1]]' }).eq('id', m.id).eq('sender_id', activeUserId);
+        if (error) throw error;
+        Object.assign(m, { del: 'user', b: '', img: 0, imgs: null, au: null, poll: null, doc: null, ev: null, stk: null });
+        haptic('success'); msgs();
+        if (cosmicPresenceReady && cosmicPresenceChannel) cosmicPresenceChannel.send({ type: 'broadcast', event: 'chat-message-updated', payload: { conversation_id: c.id, message_id: m.id } }).catch(()=>{});
+      } catch (e) { toast('Could not delete for everyone: ' + e.message); }
+    });
+  }) : null;
+  if (removeMine) removeMine.classList.add('danger');
+  if (removeEveryone) removeEveryone.classList.add('danger');
   sheet(
     el('b', {}, 'Message'),
     el('div', { class: 'emo' }, ...EMO.map(e => el('button', { 'aria-label': 'React ' + e, onclick: () => closeSheet(() => react(m, e)) }, e))),
     row(ic('reply'), 'Reply', '', null, () => closeSheet(() => startReply(m))),
     copyable ? row(ic('copy'), 'Copy', '', null, () => closeSheet(() => copyText(copyable))) : null,
+    m.img || m.imgs ? row(ic('download'), 'Download image' + (m.imgs ? 's' : ''), '', null, () => closeSheet(() => downloadMessageMedia(m))) : null,
+    m.doc ? row(ic('download'), 'Download document', '', null, () => closeSheet(() => downloadMessageMedia(m, true))) : null,
     row(ic('star'), m.st ? 'Remove star' : 'Star message', '', null, () => closeSheet(() => { m.st = !m.st; haptic('pop'); msgs(); })),
     canPin(c) ? row(ic((c.pins || []).includes(m.id) ? 'unpin' : 'pin'), (c.pins || []).includes(m.id) ? 'Unpin message' : 'Pin message', '', null, () => closeSheet(() => togglePin(c, m))) : null,
     row(ic('fw'), 'Forward', '', null, () => { document.querySelectorAll('.modal').forEach(x => x.remove()); fwd(m); }),
     me && m.b ? row(ic('edit'), 'Edit', '', null, () => closeSheet(() => { EDIT = m; $('#txt').value = m.b; haptic('tap'); showBar('Editing message', m.b, () => { EDIT = null; $('#txt').value = ''; clearBar(); }); $('#txt').focus(); })) : null,
-    delRow
+    removeMine, removeEveryone
   );
 }
-
+async function downloadMessageMedia(m, documentOnly = false) {
+  const items = documentOnly ? [{ url: m.doc && m.doc.url, name: m.doc && m.doc.name }] :
+    (m.imgs || [m.img]).filter(x => typeof x === 'string' && /^https?:/.test(x)).map((url, i) => ({ url, name: 'cosmic-chat-photo-' + (i + 1) + '.jpg' }));
+  if (!items.length || items.some(x => !x.url)) return toast('Download link is not available for this older message.');
+  for (const item of items) {
+    try {
+      const response = await fetch(item.url);
+      if (!response.ok) throw new Error('Download failed');
+      const blob = await response.blob(), objectUrl = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href = objectUrl; a.download = item.name || 'cosmic-chat-file'; document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+    } catch (e) { window.open(item.url, '_blank', 'noopener'); }
+  }
+  haptic('success');
+}
 function fwd(m) {
   sheet(el('b', {}, 'Forward to'), ...C.map(c => row(av(title(c), 0, 0, chatImg(c)), title(c), '', null, () => closeSheet(() => {
     c.msgs.push({ ...m, id: Math.random(), f: 'me', t: Date.now(), fw: 1, rx: null, re: null, read: false, st: false, del: 0 });
@@ -4802,28 +4850,56 @@ function chatMenu(c) {
 }
 
 function pollNew() {
-  const q = el('input', { class: 'field', placeholder: 'Question' });
-  const os = [1, 2, 3, 4].map(i => el('input', { class: 'field', placeholder: 'Option ' + i }));
-  sheet(el('b', {}, 'New poll'), q, ...os, btn('Create poll', () => {
-    const o = os.map(x => x.value.trim()).filter(Boolean), t = q.value.trim();
-    if (!t || o.length < 2) {
-      haptic('warn');
-      return toast('Add a question and 2 options.');
-    }
-    closeSheet(() => send({ poll: { q: t, o: o.map(x => ({ t: x, v: [] })) } }));
-  }));
+  const q = el('input', { class: 'field', placeholder: 'Ask a question…', maxlength: 180 });
+  const os = [1,2,3,4].map(i => el('input', { class: 'field', placeholder: 'Option ' + i, maxlength: 90 }));
+  const multi = { value: false };
+  sheet(el('b', {}, 'Create a poll'), el('small', {}, 'Your question and options will sync for everyone in this chat.'), q, ...os,
+    el('div', { class: 'opt' }, 'Allow multiple answers', sw(false, v => { multi.value = v; })),
+    btn('Publish poll', () => {
+      const opts = os.map(x => x.value.trim()).filter(Boolean), question = q.value.trim();
+      if (!question || opts.length < 2 || new Set(opts.map(x => x.toLowerCase())).size !== opts.length) {
+        haptic('warn'); return toast('Add a question and at least 2 different options.');
+      }
+      closeSheet(() => send({ poll: { q: question, o: opts.map(t => ({ t, v: [] })), multiple: multi.value } }));
+    })
+  );
 }
-
-const pollEl = (c, m) => el('div', { class: 'poll' }, el('b', {}, m.poll.q), ...m.poll.o.map(o => {
-  const n = m.poll.o.reduce((a, x) => a + x.v.length, 0), mine = o.v.includes('me');
-  return el('button', { class: 'pop' + (mine ? ' on' : ''), onclick: e => {
-    e.stopPropagation();
-    m.poll.o.forEach(x => x.v = x.v.filter(y => y !== 'me'));
-    if (!mine) o.v.push('me');
-    haptic('pop');
-    msgs();
-  } }, el('i', { style: 'width:' + (n ? Math.round(o.v.length / n * 100) : 0) + '%' }), el('span', {}, o.t), el('small', {}, String(o.v.length)));
-}));
+async function votePoll(m, optionIndex) {
+  if (!sb || !activeUserId || !m.id || String(m.id).startsWith('pending-')) return toast('Wait until this poll is sent.');
+  const old = m.poll.o.findIndex(o => o.v.includes('me'));
+  const target = old === optionIndex ? -1 : optionIndex;
+  const before = m.poll.o.map(o => [...o.v]);
+  m.poll.o.forEach(o => { o.v = o.v.filter(v => v !== 'me'); });
+  if (target >= 0) m.poll.o[target].v.push('me');
+  msgs();
+  try {
+    const { error: delError } = await sb.from('poll_votes').delete().eq('message_id', m.id).eq('user_id', activeUserId);
+    if (delError) throw delError;
+    if (target >= 0) {
+      const { error } = await sb.from('poll_votes').insert({ message_id: m.id, user_id: activeUserId, option_index: target });
+      if (error) throw error;
+    }
+    await refreshPollVotes(m);
+    if (cosmicPresenceReady && cosmicPresenceChannel) cosmicPresenceChannel.send({ type: 'broadcast', event: 'chat-poll-vote', payload: { conversation_id: cur, message_id: m.id } }).catch(()=>{});
+  } catch (e) { m.poll.o.forEach((o,i)=>o.v=before[i]); msgs(); toast('Vote was not saved. ' + e.message); }
+}
+async function refreshPollVotes(m) {
+  if (!m || !m.poll) return;
+  const { data, error } = await sb.from('poll_votes').select('user_id, option_index').eq('message_id', m.id);
+  if (error) { console.warn('Poll vote refresh failed', error); return; }
+  m.poll.o.forEach(o => o.v = []);
+  (data || []).forEach(v => { if (m.poll.o[v.option_index]) m.poll.o[v.option_index].v.push(v.user_id === activeUserId ? 'me' : v.user_id); });
+  if (cur != null) msgs();
+}
+const pollEl = (c, m) => el('div', { class: 'poll' }, el('b', {}, m.poll.q),
+  ...m.poll.o.map((o, i) => {
+    const total = m.poll.o.reduce((n, x) => n + x.v.length, 0), mine = o.v.includes('me');
+    return el('button', { class: 'pop' + (mine ? ' on' : ''), onclick: e => { e.stopPropagation(); votePoll(m, i); } },
+      el('i', { style: 'width:' + (total ? Math.round(o.v.length / total * 100) : 0) + '%' }),
+      el('span', {}, o.t), el('small', {}, String(o.v.length)));
+  }),
+  el('small', {}, m.poll.multiple ? 'Multiple answers allowed' : 'Single choice · ' + m.poll.o.reduce((n,o)=>n+o.v.length,0) + ' votes')
+);
 
 const mic = { classList: $('#send').classList };
 mic.onclick = async () => {
@@ -5339,8 +5415,8 @@ const richNodes = t => t.split(/(https?:\/\/\S+|@\w+)/g).map(p =>
 
 const docEl = m => el(
   'button',
-  { type: 'button', class: 'doc', style: 'width:100%;text-align:left;cursor:pointer', onclick: e => { e.stopPropagation(); haptic('tap'); if (m.doc.url) window.open(m.doc.url, '_blank', 'noopener'); else toast('This older document has no download link.'); } },
-  el('div', { class: 'doc-ic' }, m.doc.ext || 'PDF'),
+  { type: 'button', class: 'doc', style: 'width:100%;text-align:left;cursor:pointer', onclick: e => { e.stopPropagation(); haptic('tap'); downloadMessageMedia(m, true); } },
+  el('div', { class: 'doc-ic' }, m.doc.ext || 'FILE'),
   el('div', { class: 'doc-info' }, el('b', {}, m.doc.name), el('small', {}, m.doc.meta || 'Document')),
   el('span', { class: 'doc-ic' }, ic('download', 17))
 );
@@ -6140,6 +6216,31 @@ function subscribeToConversation(conversationId) {
       if (cur === conversationId) { msgs(true); if (message.f !== 'me') markConversationRead(conversationId); }
       render();
     })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: 'conversation_id=eq.' + conversationId }, payload => {
+      const c = find(conversationId), row = payload.new;
+      if (!c || !row) return;
+      const m = c.msgs.find(x => x.id === row.id);
+      if (!m) return;
+      if (row.deleted_at) Object.assign(m, { del: 'user', b: '', img: 0, imgs: null, au: null, poll: null, doc: null, ev: null, stk: null });
+      else Object.assign(m, mapDbMessage(row));
+      if (cur === conversationId) msgs();
+    })
+    .on('broadcast', { event: 'chat-message-updated' }, async message => {
+      const data = message.payload || {};
+      if (data.conversation_id !== conversationId || !data.message_id) return;
+      const { data: row } = await sb.from('messages').select('id, conversation_id, sender_id, body, message_type, created_at, edited_at, deleted_at').eq('id', data.message_id).maybeSingle();
+      const c = find(conversationId), m = c && c.msgs.find(x => x.id === data.message_id);
+      if (m && row && row.deleted_at) { Object.assign(m, { del: 'user', b: '', img: 0, imgs: null, au: null, poll: null, doc: null, ev: null, stk: null }); if (cur === conversationId) msgs(); }
+    })
+    .on('broadcast', { event: 'chat-poll-vote' }, async message => {
+      const data = message.payload || {}, c = find(conversationId), m = c && c.msgs.find(x => x.id === data.message_id);
+      if (data.conversation_id === conversationId && m) await refreshPollVotes(m);
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'poll_votes' }, async payload => {
+      const row = payload.new || payload.old;
+      const c = find(conversationId), m = c && c.msgs.find(x => x.id === row.message_id);
+      if (m && m.poll) await refreshPollVotes(m);
+    })
     .subscribe(status => {
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') console.warn('Realtime subscription failed for', conversationId, status);
     });
@@ -6355,6 +6456,7 @@ async function send(extra = {}) {
     } else if (hasStructured) {
       const kind = extra.poll ? 'poll' : extra.ev ? 'event' : 'sticker';
       const value = extra.poll || extra.ev || extra.stk;
+      if (kind === 'poll') messageType = 'poll';
       messageBody = '[[COSMIC_STRUCT_V1]]' + JSON.stringify({ v: 1, kind, value, caption: body });
       if (kind === 'poll') optimistic.poll = value;
       if (kind === 'event') optimistic.ev = value;
@@ -6365,6 +6467,7 @@ async function send(extra = {}) {
     if (error) throw error;
     const saved = mapDbMessage(data), pending = c.msgs.find(m => m.id === localId);
     if (pending) Object.assign(pending, saved, { pending: false }); else if (!c.msgs.some(m => m.id === saved.id)) c.msgs.push(saved);
+    if (saved.poll) await refreshPollVotes(saved);
     c.msgs.sort((a, b) => a.t - b.t); if (cur === c.id) msgs(false);
     if (cosmicPresenceReady && cosmicPresenceChannel) cosmicPresenceChannel.send({ type: 'broadcast', event: 'chat-new-message', payload: { conversation_id: c.id, recipient_ids: [...(c.m || [])], sender_id: activeUserId } }).catch(error => console.warn('Live chat notification failed:', error));
   } catch (e) {
