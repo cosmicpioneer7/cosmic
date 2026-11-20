@@ -4139,17 +4139,27 @@ const rowPerson = k => F.has(k)
   ? row(av(U[k].n, U[k].on), U[k].n, U[k].on ? 'Online' : 'Offline', btn('Message', () => dm(k)), () => userProfileSheet(k))
   : row(av(U[k].n), U[k].n, S.has(k) ? 'Request sent' : 'Suggested for you', btn(S.has(k) ? 'Requested' : 'Add friend', () => { S.add(k); haptic('success'); toast('Friend request sent'); render(); }, S.has(k)), () => userProfileSheet(k));
 
+const COSMIC_MEDIA_MARKER = '[[COSMIC_MEDIA_V1]]';
 function mapDbMessage(row) {
-  return {
-    id: row.id,
-    f: row.sender_id === activeUserId ? 'me' : row.sender_id,
-    b: row.body || '',
-    t: new Date(row.created_at).getTime(),
-    ed: !!row.edited_at,
-    del: row.deleted_at ? 'user' : false,
-    read: false,
-    delivered: false
-  };
+  let body = row.body || '', media = null, structured = null;
+  if (body.startsWith(COSMIC_MEDIA_MARKER)) {
+    try { const p = JSON.parse(body.slice(COSMIC_MEDIA_MARKER.length)); if (p && p.v === 1) { media = p; body = p.caption || ''; } } catch (e) { console.warn('Invalid media message payload', e); }
+  } else if (body.startsWith('[[COSMIC_STRUCT_V1]]')) {
+    try { const p = JSON.parse(body.slice('[[COSMIC_STRUCT_V1]]'.length)); if (p && p.v === 1) { structured = p; body = p.caption || ''; } } catch (e) { console.warn('Invalid structured message payload', e); }
+  }
+  const message = { id: row.id, f: row.sender_id === activeUserId ? 'me' : row.sender_id, b: body, t: new Date(row.created_at).getTime(), ed: !!row.edited_at, del: row.deleted_at ? 'user' : false, read: false, delivered: false };
+  if (media) {
+    if (media.kind === 'image') message.img = media.urls && media.urls[0];
+    if (media.kind === 'album') message.imgs = media.urls || [];
+    if (media.kind === 'document') message.doc = media.doc;
+    if (media.kind === 'audio') message.au = media.url;
+  }
+  if (structured) {
+    if (structured.kind === 'poll') message.poll = structured.value;
+    if (structured.kind === 'event') message.ev = structured.value;
+    if (structured.kind === 'sticker') message.stk = structured.value;
+  }
+  return message;
 }
 
 async function loadConversations() {
@@ -5563,7 +5573,7 @@ dfi.onchange = () => {
   if (!f) return;
   const ext = (f.name.split('.').pop() || 'FILE').toUpperCase().slice(0, 4);
   const mb = (f.size / 1048576).toFixed(1);
-  send({ doc: { name: f.name, meta: (mb === '0.0' ? Math.max(1, Math.round(f.size / 1024)) + ' KB' : mb + ' MB') + ' \u00b7 ' + ext, ext } });
+  send({ file: f, doc: { name: f.name, meta: (mb === '0.0' ? Math.max(1, Math.round(f.size / 1024)) + ' KB' : mb + ' MB') + ' \u00b7 ' + ext, ext } });
 };
 
 function attachMenu() {
@@ -6298,59 +6308,69 @@ const isPureEmoji = str => {
 };
 
 async function send(extra = {}) {
-  const c = cur != null ? find(cur) : null;
-  const input = $('#txt');
-  const body = input.value.trim();
-  if (!c || !body) return;
+  const c = cur != null ? find(cur) : null, input = $('#txt'), body = input.value.trim();
+  const hasMedia = !!(extra.file || extra.img || extra.imgs || extra.au), hasStructured = !!(extra.poll || extra.ev || extra.stk);
+  if (!c || (!body && !hasMedia && !hasStructured)) return;
   if (!sb || !activeUserId) return toast('Please sign in again to send messages.');
-
-  // Optimistic UI: show the bubble and clear the composer before waiting for the network.
   const localId = 'pending-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2));
-  const optimistic = {
-    id: localId, f: 'me', b: body, t: Date.now(),
-    read: false, delivered: false, pending: true
-  };
-  c.msgs.push(optimistic);
-  c.draft = '';
-  input.value = '';
-  input.style.height = 'auto';
-  syncAct();
-  stopTyping();
-  if (cur === c.id) msgs(true);
-  haptic('send');
-
+  const optimistic = { id: localId, f: 'me', b: body, t: Date.now(), read: false, delivered: false, pending: true };
+  c.msgs.push(optimistic); c.draft = ''; input.value = ''; input.style.height = 'auto'; syncAct(); stopTyping();
+  if (cur === c.id) msgs(true); haptic('send');
+  const uploadedPaths = [];
   try {
-    const payload = { conversation_id: c.id, sender_id: activeUserId, body, message_type: 'text' };
-    const { data, error } = await sb.from('messages')
-      .insert(payload)
-      .select('id, conversation_id, sender_id, body, message_type, created_at, edited_at, deleted_at')
-      .single();
-    if (error) throw error;
-
-    const saved = mapDbMessage(data);
-    const pending = c.msgs.find(m => m.id === localId);
-    if (pending) Object.assign(pending, saved, { pending: false });
-    else if (!c.msgs.some(m => m.id === saved.id)) c.msgs.push(saved);
-    c.msgs.sort((a, b) => a.t - b.t);
-    if (cur === c.id) msgs(false);
-
-    if (cosmicPresenceReady && cosmicPresenceChannel) {
-      cosmicPresenceChannel.send({
-        type: 'broadcast', event: 'chat-new-message',
-        payload: { conversation_id: c.id, recipient_ids: [...(c.m || [])], sender_id: activeUserId }
-      }).catch(error => console.warn('Live chat notification failed:', error));
+    let messageBody = body, messageType = 'text', attachmentPath = null;
+    if (hasMedia) {
+      const files = [];
+      if (extra.file) files.push(extra.file);
+      if (extra.img) files.push({ name: 'photo.jpg', type: 'image/jpeg', source: extra.img });
+      if (extra.imgs) extra.imgs.forEach((source, i) => files.push({ name: 'photo-' + (i + 1) + '.jpg', type: 'image/jpeg', source }));
+      if (extra.au) files.push({ name: 'voice-message.webm', type: 'audio/webm', source: extra.au });
+      const urls = [], metadata = [];
+      for (const file of files) {
+        const blob = file.source ? await (await fetch(file.source)).blob() : file;
+        const mime = blob.type || file.type || 'application/octet-stream';
+        if (blob.size > 50 * 1024 * 1024) throw new Error('Files must be smaller than 50 MB.');
+        const name = (file.name || 'attachment').replace(/[^a-zA-Z0-9._-]/g, '_').slice(-100);
+        const path = c.id + '/' + activeUserId + '/' + (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2)) + '-' + name;
+        const { error: uploadError } = await sb.storage.from('cosmic-chat-media').upload(path, blob, { contentType: mime, upsert: false });
+        if (uploadError) throw uploadError;
+        uploadedPaths.push(path);
+        const { data: signed, error: signedError } = await sb.storage.from('cosmic-chat-media').createSignedUrl(path, 31536000);
+        if (signedError) throw signedError;
+        urls.push(signed.signedUrl); metadata.push({ name: file.name || name, type: mime, size: blob.size, path });
+      }
+      const kind = extra.file ? 'document' : extra.au ? 'audio' : files.length > 1 ? 'album' : 'image';
+      messageType = kind === 'album' ? 'image' : kind;
+      const media = { v: 1, kind, caption: body, urls, files: metadata };
+      if (kind === 'document') {
+        const file = metadata[0], ext = (file.name.split('.').pop() || 'FILE').toUpperCase().slice(0, 4), mb = (file.size / 1048576).toFixed(1);
+        media.doc = { name: file.name, meta: (mb === '0.0' ? Math.max(1, Math.round(file.size / 1024)) + ' KB' : mb + ' MB') + ' · ' + ext, ext, url: urls[0] };
+        optimistic.doc = media.doc;
+      }
+      if (kind === 'audio') { media.url = urls[0]; optimistic.au = urls[0]; }
+      if (kind === 'image') optimistic.img = urls[0];
+      if (kind === 'album') optimistic.imgs = urls;
+      messageBody = COSMIC_MEDIA_MARKER + JSON.stringify(media); attachmentPath = uploadedPaths[0];
+    } else if (hasStructured) {
+      const kind = extra.poll ? 'poll' : extra.ev ? 'event' : 'sticker';
+      const value = extra.poll || extra.ev || extra.stk;
+      messageBody = '[[COSMIC_STRUCT_V1]]' + JSON.stringify({ v: 1, kind, value, caption: body });
+      if (kind === 'poll') optimistic.poll = value;
+      if (kind === 'event') optimistic.ev = value;
+      if (kind === 'sticker') optimistic.stk = value;
     }
+    const payload = { conversation_id: c.id, sender_id: activeUserId, body: messageBody, message_type: messageType, ...(attachmentPath ? { attachment_path: attachmentPath } : {}) };
+    const { data, error } = await sb.from('messages').insert(payload).select('id, conversation_id, sender_id, body, message_type, created_at, edited_at, deleted_at').single();
+    if (error) throw error;
+    const saved = mapDbMessage(data), pending = c.msgs.find(m => m.id === localId);
+    if (pending) Object.assign(pending, saved, { pending: false }); else if (!c.msgs.some(m => m.id === saved.id)) c.msgs.push(saved);
+    c.msgs.sort((a, b) => a.t - b.t); if (cur === c.id) msgs(false);
+    if (cosmicPresenceReady && cosmicPresenceChannel) cosmicPresenceChannel.send({ type: 'broadcast', event: 'chat-new-message', payload: { conversation_id: c.id, recipient_ids: [...(c.m || [])], sender_id: activeUserId } }).catch(error => console.warn('Live chat notification failed:', error));
   } catch (e) {
     console.error('Message send failed:', e);
+    if (uploadedPaths.length) await sb.storage.from('cosmic-chat-media').remove(uploadedPaths).catch(() => {});
     c.msgs = c.msgs.filter(m => m.id !== localId);
-    if (cur === c.id) {
-      if (!input.value.trim()) {
-        input.value = body;
-        c.draft = body;
-      }
-      msgs(false);
-      syncAct();
-    }
+    if (cur === c.id) { if (!input.value.trim()) { input.value = body; c.draft = body; } msgs(false); syncAct(); }
     toast('Message not sent. ' + (e.message || 'Check your connection and try again.'));
   }
 }
