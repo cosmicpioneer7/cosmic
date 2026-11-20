@@ -4852,15 +4852,13 @@ function chatMenu(c) {
 function pollNew() {
   const q = el('input', { class: 'field', placeholder: 'Ask a question…', maxlength: 180 });
   const os = [1,2,3,4].map(i => el('input', { class: 'field', placeholder: 'Option ' + i, maxlength: 90 }));
-  const multi = { value: false };
-  sheet(el('b', {}, 'Create a poll'), el('small', {}, 'Your question and options will sync for everyone in this chat.'), q, ...os,
-    el('div', { class: 'opt' }, 'Allow multiple answers', sw(false, v => { multi.value = v; })),
+  sheet(el('b', {}, 'Create a poll'), el('small', {}, 'Single-choice poll · Votes sync for everyone in this chat.'), q, ...os,
     btn('Publish poll', () => {
       const opts = os.map(x => x.value.trim()).filter(Boolean), question = q.value.trim();
       if (!question || opts.length < 2 || new Set(opts.map(x => x.toLowerCase())).size !== opts.length) {
         haptic('warn'); return toast('Add a question and at least 2 different options.');
       }
-      closeSheet(() => send({ poll: { q: question, o: opts.map(t => ({ t, v: [] })), multiple: multi.value } }));
+      closeSheet(() => send({ poll: { q: question, o: opts.map(t => ({ t, v: [] })), multiple: false } }));
     })
   );
 }
@@ -6215,6 +6213,12 @@ function subscribeToConversation(conversationId) {
       c.msgs.sort((a, b) => a.t - b.t);
       if (cur === conversationId) { msgs(true); if (message.f !== 'me') markConversationRead(conversationId); }
       render();
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'message_user_deletions', filter: 'user_id=eq.' + activeUserId }, payload => {
+      const c = find(conversationId), row = payload.new;
+      if (!c || !row) return;
+      c.msgs = c.msgs.filter(m => m.id !== row.message_id);
+      if (cur === conversationId) msgs();
     })
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: 'conversation_id=eq.' + conversationId }, payload => {
       const c = find(conversationId), row = payload.new;
