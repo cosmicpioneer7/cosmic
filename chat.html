@@ -5914,13 +5914,14 @@ let cosmicOnlineIds = new Set();
 let typingPeerTimer = null;
 async function markConversationRead(conversationId) {
   if (!sb || !activeUserId || !conversationId || cur !== conversationId) return;
-  const { data, error } = await sb.rpc('mark_conversation_read', { target_conversation: conversationId });
+  const { error } = await sb.rpc('mark_conversation_read', { target_conversation: conversationId });
   if (error) {
-    console.warn('Read receipt RPC failed; trying membership update:', error.message);
-    const fallback = await sb.from('conversation_members')
-      .update({ last_read_at: new Date().toISOString() })
-      .eq('conversation_id', conversationId).eq('user_id', activeUserId).select('last_read_at').maybeSingle();
-    if (fallback.error) console.warn('Read receipt fallback failed:', fallback.error.message);
+    console.warn('Read receipt RPC failed:', error.message);
+    return;
+  }
+  if (cosmicPresenceReady && cosmicPresenceChannel) {
+    cosmicPresenceChannel.send({ type: 'broadcast', event: 'chat-read', payload: { conversation_id: conversationId, reader_id: activeUserId } })
+      .catch(err => console.warn('Read notification failed:', err));
   }
   await refreshReadReceipts(conversationId);
 }
@@ -5959,7 +5960,19 @@ async function syncIncomingConversation(conversationId) {
   if (!sb || !activeUserId) return;
   const { error } = await sb.rpc('mark_conversation_delivered', { target_conversation: conversationId });
   if (error) { console.warn('Delivery acknowledgement failed:', error.message); return; }
-  await loadConversations();
+  // Update only this conversation's newest message; never reload every chat/history on delivery.
+  const c = find(conversationId);
+  const { data: latest, error: latestError } = await sb.from('messages')
+    .select('id, conversation_id, sender_id, body, message_type, created_at, edited_at, deleted_at')
+    .eq('conversation_id', conversationId).order('created_at', { ascending: false }).limit(1).maybeSingle();
+  if (latestError) console.warn('Latest message sync failed:', latestError.message);
+  if (latest && c && !c.msgs.some(m => m.id === latest.id)) {
+    c.msgs.push(mapDbMessage(latest));
+    c.msgs.sort((a, b) => a.t - b.t);
+    if (cur !== conversationId && latest.sender_id !== activeUserId) c.unread = (c.unread || 0) + 1;
+    if (cur === conversationId) { msgs(true); await markConversationRead(conversationId); }
+    render();
+  }
   if (cosmicPresenceReady && cosmicPresenceChannel) {
     await cosmicPresenceChannel.send({
       type: 'broadcast', event: 'chat-delivered',
@@ -6014,18 +6027,9 @@ function setupCosmicPresence() {
       const data = message.payload || {};
       if (data.conversation_id) refreshDeliveryReceipts(data.conversation_id);
     })
-    // Global database listeners work even when neither user has opened the chat.
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async payload => {
-      const row = payload.new || {};
-      if (!row.conversation_id || row.sender_id === activeUserId) return;
-      await syncIncomingConversation(row.conversation_id);
-    })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'message_receipts' }, payload => {
-      const row = payload.new || payload.old || {};
-      const message = row.message_id
-        ? C.flatMap(chat => chat.msgs.map(m => ({ chat, m }))).find(x => x.m.id === row.message_id)
-        : null;
-      if (message) refreshDeliveryReceipts(message.chat.id);
+    .on('broadcast', { event: 'chat-read' }, message => {
+      const data = message.payload || {};
+      if (data.conversation_id) refreshDeliveryReceipts(data.conversation_id);
     })
     .subscribe(async status => {
       cosmicPresenceReady = status === 'SUBSCRIBED';
@@ -6044,16 +6048,7 @@ function subscribeToConversation(conversationId) {
   activeMessageChannel = sb.channel('cosmic-chat-' + conversationId, {
     config: { broadcast: { self: false } }
   })
-    .on('broadcast', { event: 'typing' }, message => {
-      const data = message.payload || {};
-      if (data.user_id === activeUserId || data.conversation_id !== conversationId || cur !== conversationId) return;
-      if (typingPeerTimer) clearTimeout(typingPeerTimer);
-      typer = data.typing ? (U[data.user_id]?.n || 'Someone') : '';
-      if (data.typing) typingPeerTimer = setTimeout(() => { typer = ''; if (cur === conversationId) head(); }, 3500);
-      head();
-    })
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversation_members', filter: 'conversation_id=eq.' + conversationId }, () => refreshReadReceipts(conversationId))
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'message_receipts' }, () => refreshDeliveryReceipts(conversationId))
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: 'conversation_id=eq.' + conversationId }, payload => {
       const c = find(conversationId);
       if (!c || !payload.new) return;
