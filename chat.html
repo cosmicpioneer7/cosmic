@@ -5338,10 +5338,11 @@ const richNodes = t => t.split(/(https?:\/\/\S+|@\w+)/g).map(p =>
 );
 
 const docEl = m => el(
-  'div',
-  { class: 'doc', onclick: e => { e.stopPropagation(); haptic('tap'); toast('Opening ' + m.doc.name + '\u2026'); } },
+  'button',
+  { type: 'button', class: 'doc', style: 'width:100%;text-align:left;cursor:pointer', onclick: e => { e.stopPropagation(); haptic('tap'); if (m.doc.url) window.open(m.doc.url, '_blank', 'noopener'); else toast('This older document has no download link.'); } },
   el('div', { class: 'doc-ic' }, m.doc.ext || 'PDF'),
-  el('div', { class: 'doc-info' }, el('b', {}, m.doc.name), el('small', {}, m.doc.meta || 'Document'))
+  el('div', { class: 'doc-info' }, el('b', {}, m.doc.name), el('small', {}, m.doc.meta || 'Document')),
+  el('span', { class: 'doc-ic' }, ic('download', 17))
 );
 
 const albumEl = m => {
