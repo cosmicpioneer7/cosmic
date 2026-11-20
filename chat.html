@@ -3940,7 +3940,7 @@ let tab = 'chats', cur = null, typer = '';
 
 let C = []; // Conversations are loaded from Supabase after authentication.
 
-let K = []; // Communities are loaded from Supabase after authentication.
+let K = []; // Communities are loaded from Supabase after authentication.\nlet COMMUNITY_QUERY = '', COMMUNITY_TIMER = null;
 
 const find = id => C.find(c => c.id === id) || K.find(c => c.id === id);
 const title = c => c.g ? c.name : c.self ? (P.name || 'Cosmicpioneer') + ' (You)' : (U[c.m[0]]?.n || 'Deleted User');
@@ -4055,9 +4055,17 @@ const rowChat = c => press(c, row(
   () => open(c.id)
 ));
 
-const rowComm = k => k.joined
-  ? row(avTap(av(k.name, 0, 0, k.img), () => groupInfo(k.id), 'View ' + k.name + ' info'), k.name, k.desc, el('div', { class: 'rt' + (k.unread ? ' u' : '') }, el('small', {}, fmtN(k.n) + ' members'), k.unread ? el('span', { class: 'badge' }, k.unread) : null), () => open(k.id))
-  : row(avTap(av(k.name, 0, 0, k.img), () => groupInfo(k.id), 'View ' + k.name + ' info'), k.name, fmtN(k.n) + ' members · ' + (k.approve ? 'Approval needed · ' : '') + k.desc, k.approve ? btn(k.pend ? 'Requested' : 'Request', () => { haptic('warn'); toast('Community requests require the Supabase backend.'); }, true) : btn('Join', () => { k.joined = 1; k.n++; haptic('success'); toast('Joined ' + k.name); render(); }), () => groupInfo(k.id));
+const rowComm = k => row(avTap(av(k.name, 0, 0, k.img), () => communityInfo(k.id), 'View ' + k.name + ' info'), k.name,
+  fmtN(k.n) + ' members · ' + (k.joined ? 'Joined · ' : '') + (k.desc || 'Community'),
+  k.joined ? el('div', { class: 'rt' }, el('small', {}, 'Open')) : btn(k.pend ? 'Requested' : 'Join', async () => {
+    if (k.pend) return;
+    try {
+      const { data, error } = await sb.rpc('join_community', { p_conversation_id: k.id });
+      if (error) throw error;
+      await loadConversations(); await loadCommunities();
+      toast(data === 'requested' ? 'Join request sent to admins.' : 'Joined ' + k.name);
+    } catch (e) { console.error(e); toast(e.message || 'Could not join community.'); }
+  }), () => k.joined ? open(k.id) : communityInfo(k.id));
 
 function userProfileSheet(k, backFn) {
   if (!k || k === 'me') {
@@ -4259,8 +4267,25 @@ async function loadConversations() {
       unread: msgsForChat.filter(message => message.f !== 'me' && message.t > (members.find(m => m.user_id === activeUserId)?.last_read_at ? new Date(members.find(m => m.user_id === activeUserId).last_read_at).getTime() : 0)).length,
       n: members.length, dis: 0, createdAt: row.created_at
     };
-  }).filter(c => c.g || c.m.length);
+  }).filter(c => !c.k && (c.g || c.m.length));
   render();
+}
+
+async function loadCommunities() {
+  if (!sb || !activeUserId) return;
+  try {
+    const { data, error } = await sb.rpc('discover_communities', { p_search: COMMUNITY_QUERY || '' });
+    if (error) throw error;
+    K = (data || []).map(x => ({ id: x.id, g: 1, k: 1, name: x.title || 'Community', desc: x.description || '', n: Number(x.member_count || 0), approve: !!x.requires_approval, joined: !!x.joined, pend: false, msgs: [], m: [], adm: [], unread: 0 }));
+    if (tab === 'comm') render();
+  } catch (e) { console.error('Community discovery failed:', e); toast('Could not load communities.'); }
+}
+function communityInfo(id) {
+  const k = K.find(x => x.id === id); if (!k) return;
+  sheet(el('div', { class: 'ginfo' }, av(k.name, 0, 72, k.img), el('b', { class: 'gname' }, k.name), el('small', {}, fmtN(k.n) + ' members'), el('small', {}, k.desc || 'A Cosmic Chat community')),
+    k.joined ? btn('Open community', () => closeSheet(() => open(k.id))) : btn(k.pend ? 'Request pending' : 'Join community', async () => {
+      try { const { data, error } = await sb.rpc('join_community', { p_conversation_id: k.id }); if (error) throw error; await loadConversations(); await loadCommunities(); closeSheet(); toast(data === 'requested' ? 'Request sent.' : 'You joined ' + k.name); } catch (e) { toast(e.message || 'Could not join.'); }
+    }));
 }
 
 async function dm(k) {
@@ -4561,7 +4586,13 @@ function vFriends(v) {
 }
 
 function vComm(v) {
-  v.replaceChildren(el('h2', {}, T('Communities')), ...K.map(rowComm));
+  const search = el('input', { class: 'field', placeholder: 'Discover communities…', value: COMMUNITY_QUERY || '' });
+  const mine = K.filter(c => c.joined), discover = K.filter(c => !c.joined);
+  search.oninput = () => { COMMUNITY_QUERY = search.value; clearTimeout(COMMUNITY_TIMER); COMMUNITY_TIMER = setTimeout(loadCommunities, 250); };
+  v.replaceChildren(el('h2', {}, T('Communities')), search,
+    ...(mine.length ? [el('div', { class: 'sec' }, 'Your communities'), ...mine.map(rowComm)] : []),
+    ...(discover.length ? [el('div', { class: 'sec' }, 'Discover'), ...discover.map(rowComm)] : []),
+    !K.length ? el('p', { class: 'empty' }, 'No communities yet. Create one or search to discover communities.') : null);
 }
 
 const isAdmin = c => !!(c && c.adm && c.adm.includes('me'));
@@ -6561,33 +6592,46 @@ function newChat() {
 }
 
 function create() {
-  let type = 'group', apv = false;
-  const apR = el('div', { class: 'opt', hidden: true }, 'Admins approve new members', sw(false, v => { apv = v; }));
-  const sel = new Set(), nm = el('input', { class: 'field', placeholder: 'Name' }), ds = el('input', { class: 'field', placeholder: 'What’s it about?', hidden: true }), list = el('div');
-  const bg = el('button', { class: 'on' }, 'Group'), bc = el('button', {}, 'Community'), note = el('small', {}, 'Private chat with friends you invite.');
+  let type = 'group', apv = false, busy = false;
+  const sel = new Set();
+  const nm = el('input', { class: 'field', placeholder: 'Name (2–60 characters)', maxlength: 60 });
+  const ds = el('input', { class: 'field', placeholder: 'Short description (optional)', maxlength: 300 });
+  const apR = el('div', { class: 'opt' }, 'Admins approve new members', sw(false, v => { apv = v; }));
+  const list = el('div'), note = el('small', {}, 'Private group. Only invited members can see it.');
+  const bg = el('button', { class: 'on' }, 'Group'), bc = el('button', {}, 'Community');
   const draw = () => {
-    bg.classList.toggle('on', type === 'group');
-    bc.classList.toggle('on', type === 'community');
-    ds.hidden = type === 'group';
-    apR.hidden = type === 'group';
-    note.textContent = type === 'group' ? 'Private chat with friends you invite.' : 'Public space anyone can find and join.';
-    list.replaceChildren(...(type === 'group' ? [...F].map(k => row(av(U[k].n), U[k].n, sel.has(k) ? 'Invited' : '', null, () => { sel.has(k) ? sel.delete(k) : sel.add(k); haptic('pop'); draw(); })) : []));
+    bg.classList.toggle('on', type === 'group'); bc.classList.toggle('on', type === 'community');
+    ds.hidden = type === 'group'; apR.hidden = type === 'group';
+    note.textContent = type === 'group' ? 'Private group. Only invited members can see it.' : 'Public community anyone can discover and join.';
+    list.replaceChildren(...(type === 'group' ? [...F].map(k => row(av(U[k]?.n || 'Member'), U[k]?.n || 'Member', sel.has(k) ? 'Selected' : '@' + (U[k]?.username || ''), null, () => { sel.has(k) ? sel.delete(k) : sel.add(k); draw(); })) : []));
   };
-  bg.onclick = () => { type = 'group'; haptic('soft'); draw(); };
-  bc.onclick = () => { type = 'community'; haptic('soft'); draw(); };
-  sheet(
-    el('b', {}, 'Create'),
-    el('div', { class: 'seg' }, bg, bc),
-    note,
-    nm,
-    ds,
-    apR,
-    list,
-    btn('Create', () => {
-      const n = nm.value.trim();
-      if (!n) { haptic('warn'); return toast('Enter a name.'); }
-      haptic('warn');
-      toast('Group and community creation require the Supabase backend. Nothing was created.');
+  bg.onclick = () => { type = 'group'; draw(); }; bc.onclick = () => { type = 'community'; draw(); };
+  const modal = sheet(el('b', {}, 'Create a space'), el('div', { class: 'seg' }, bg, bc), note, nm, ds, apR, list,
+    btn('Create', async () => {
+      if (busy) return;
+      const name = nm.value.trim();
+      if (name.length < 2) return toast('Enter a name with at least 2 characters.');
+      if (type === 'group' && !sel.size) return toast('Select at least one friend for your group.');
+      busy = true;
+      try {
+        const { data, error } = await sb.rpc('create_chat_space', {
+          p_kind: type, p_title: name, p_description: ds.value.trim(),
+          p_member_ids: type === 'group' ? [...sel] : [], p_requires_approval: type === 'community' && apv
+        });
+        if (error) throw error;
+        await loadConversations();
+        await loadCommunities();
+        closeSheet();
+        if (type === 'group') {
+          const c = find(data);
+          if (!c) throw new Error('Created, but could not load the group. Refresh and try again.');
+          tab = 'chats'; render(); open(data);
+        } else {
+          tab = 'comm'; render(); toast('Community created successfully.');
+        }
+      } catch (e) {
+        console.error('Create space failed:', e); toast(e.message || 'Could not create this space.');
+      } finally { busy = false; }
     })
   );
   draw();
