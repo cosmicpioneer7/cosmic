@@ -6048,7 +6048,6 @@ function subscribeToConversation(conversationId) {
   activeMessageChannel = sb.channel('cosmic-chat-' + conversationId, {
     config: { broadcast: { self: false } }
   })
-    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversation_members', filter: 'conversation_id=eq.' + conversationId }, () => refreshReadReceipts(conversationId))
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: 'conversation_id=eq.' + conversationId }, payload => {
       const c = find(conversationId);
       if (!c || !payload.new) return;
@@ -6058,10 +6057,8 @@ function subscribeToConversation(conversationId) {
       c.msgs.sort((a, b) => a.t - b.t);
       if (cur === conversationId) { msgs(true); if (message.f !== 'me') markConversationRead(conversationId); }
       render();
-      refreshReadReceipts(conversationId);
     })
     .subscribe(status => {
-      if (status === 'SUBSCRIBED' && cur === conversationId) markConversationRead(conversationId);
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') console.warn('Realtime subscription failed for', conversationId, status);
     });
 }
